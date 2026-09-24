@@ -224,9 +224,10 @@ jobs:
             -exportPath "$work/export" \
             -exportOptionsPlist "$options"
 
-          mapfile -d '' ipas < <(find "$work/export" -maxdepth 1 -type f -name '*.ipa' -print0)
-          [ "${#ipas[@]}" = 1 ] || { echo "::error::expected exactly one IPA"; exit 1; }
-          echo "IPA_PATH=${ipas[0]}" >> "$GITHUB_ENV"
+          ipa_count="$(find "$work/export" -maxdepth 1 -type f -name '*.ipa' -print | wc -l | tr -d ' ')"
+          [ "$ipa_count" = 1 ] || { echo "::error::expected exactly one IPA"; exit 1; }
+          ipa="$(find "$work/export" -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          echo "IPA_PATH=$ipa" >> "$GITHUB_ENV"
           echo "Ad Hoc IPA export: PASS"
 
       - name: Verify signed IPA and embedded profile
@@ -237,9 +238,10 @@ jobs:
           work="$RUNNER_TEMP/watchlink-device"
           unzip -q "$IPA_PATH" -d "$work/unpacked"
           fail() { echo "::error::IPA verification: $1"; exit 1; }
-          mapfile -d '' apps < <(find "$work/unpacked" -type d -name '*.app' -print0)
-          [ "${#apps[@]}" = 1 ] || fail "expected exactly one app"
-          app="${apps[0]}"
+          payload="$work/unpacked/Payload"
+          app_count="$(find "$payload" -maxdepth 1 -type d -name '*.app' -print | wc -l | tr -d ' ')"
+          [ "$app_count" = 1 ] || fail "expected exactly one app"
+          app="$(find "$payload" -maxdepth 1 -type d -name '*.app' -print -quit)"
           [ "$(basename "$app")" = Vault-App.app ] || fail "unexpected app bundle"
 
           pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist" 2>/dev/null; }

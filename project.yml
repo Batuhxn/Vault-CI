@@ -29,11 +29,11 @@ targets:
       - path: Sources/Vault
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.vault
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink
         PRODUCT_NAME: Vault-App
         GENERATE_INFOPLIST_FILE: "YES"
-        INFOPLIST_KEY_CFBundleDisplayName: VAULT
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "VAULT connects directly to your paired computer on the local network to relay messages."
+        INFOPLIST_KEY_CFBundleDisplayName: Watchlink
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Watchlink connects directly to your paired computer on the local network to relay messages."
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         MARKETING_VERSION: "0.1.0"

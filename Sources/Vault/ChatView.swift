@@ -36,7 +36,7 @@ struct ChatView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("VAULT")
+                Text("Watchlink")
                     .font(.headline)
                     .foregroundStyle(.white)
 

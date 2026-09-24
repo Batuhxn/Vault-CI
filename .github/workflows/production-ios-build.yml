@@ -77,7 +77,7 @@ jobs:
               value="$(setting "$key")"
               printf '%s=%s\n' "$key" "${value:-<unset>}"
             done
-            expect PRODUCT_BUNDLE_IDENTIFIER com.batuhxn.vault
+            expect PRODUCT_BUNDLE_IDENTIFIER com.batuhxn.watchlink
             expect PRODUCT_NAME Vault-App
             expect MARKETING_VERSION 0.1.0
             expect CURRENT_PROJECT_VERSION 1
@@ -101,7 +101,8 @@ jobs:
                 exit 1
               fi
             }
-            plist_expect CFBundleIdentifier com.batuhxn.vault
+            plist_expect CFBundleIdentifier com.batuhxn.watchlink
+            plist_expect CFBundleDisplayName Watchlink
             plist_expect CFBundleExecutable Vault-App
             plist_expect CFBundleShortVersionString 0.1.0
             plist_expect CFBundleVersion 1

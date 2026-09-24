@@ -1,0 +1,295 @@
+name: Watchlink signed IPA (TestFlight)
+
+# Manual only. Builds and verifies an Apple Distribution signed IPA.
+# App Store Connect is contacted only when `upload` is explicitly true.
+# The signed IPA is never published as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Validate and upload the verified IPA to App Store Connect/TestFlight"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  signed-ipa:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      BUNDLE_ID: com.batuhxn.watchlink
+      EXPECTED_PROFILE_NAME: Watchlink App Store Connect
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Select Xcode 26.3
+        run: |
+          set -euo pipefail
+          xcode_path=/Applications/Xcode_26.3.app
+          if [ ! -d "$xcode_path" ]; then
+            echo "::error::$xcode_path not found on this runner image. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_path"
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+
+      - name: Install XcodeGen and generate the production project
+        run: |
+          set -euo pipefail
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen --version
+          xcodegen generate --spec project.yml
+
+      - name: Import signing certificate into an ephemeral keychain
+        env:
+          IOS_DIST_P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keychain="$RUNNER_TEMP/watchlink-signing.keychain-db"
+          p12="$RUNNER_TEMP/watchlink-dist.p12"
+          printf '%s' "$IOS_DIST_P12_B64" | base64 --decode > "$p12"
+
+          keychain_password="$(openssl rand -base64 32)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -f pkcs12 -t cert \
+            -P "$IOS_DIST_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user | xargs security list-keychains -d user -s "$keychain"
+          rm -f "$p12"
+
+          # The identity name contains the certificate holder's name. This repo's
+          # logs are public, so mask it before anything (xcodebuild, codesign)
+          # can print it.
+          identities="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/^.*"\(Apple Distribution: .*\)"$/\1/p')"
+          count="$(printf '%s' "$identities" | grep -c . || true)"
+          if [ "$count" != 1 ]; then
+            echo "::error::expected exactly one Apple Distribution identity in the .p12, found $count"
+            exit 1
+          fi
+          holder="$(printf '%s' "$identities" | sed -E 's/^Apple Distribution: (.*) \([A-Z0-9]+\)$/\1/')"
+          echo "::add-mask::$identities"
+          echo "::add-mask::$holder"
+          case "$identities" in
+            *"($APPLE_TEAM_ID)") ;;
+            *) echo "::error::Apple Distribution identity does not belong to APPLE_TEAM_ID"; exit 1 ;;
+          esac
+          echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
+          echo "Apple Distribution identity imported: PASS"
+
+      - name: Install and verify provisioning profile
+        env:
+          IOS_PROFILE_B64: ${{ secrets.IOS_PROFILE_B64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          profile="$RUNNER_TEMP/watchlink-profile.mobileprovision"
+          decoded="$RUNNER_TEMP/watchlink-profile.plist"
+          printf '%s' "$IOS_PROFILE_B64" | base64 --decode > "$profile"
+          security cms -D -i "$profile" > "$decoded" 2>/dev/null
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$decoded" 2>/dev/null; }
+
+          fail() { echo "::error::provisioning profile: $1"; exit 1; }
+          [ -s "$decoded" ] || fail "could not be decoded with security cms"
+
+          # TeamName is usually the account holder's name; keep it out of public logs.
+          team_name="$(pb TeamName || true)"
+          if [ -n "$team_name" ]; then echo "::add-mask::$team_name"; fi
+
+          uuid="$(pb UUID || true)"
+          name="$(pb Name || true)"
+          app_id="$(pb Entitlements:application-identifier || true)"
+          team="$(pb TeamIdentifier:0 || true)"
+          [[ "$uuid" =~ ^[0-9A-Fa-f-]{36}$ ]] || fail "UUID is malformed"
+          [ "$name" = "$EXPECTED_PROFILE_NAME" ] || fail "Name is '$name', expected '$EXPECTED_PROFILE_NAME'"
+          [ "$app_id" = "$APPLE_TEAM_ID.$BUNDLE_ID" ] || fail "application-identifier does not match APPLE_TEAM_ID.$BUNDLE_ID"
+          [ "$team" = "$APPLE_TEAM_ID" ] || fail "TeamIdentifier does not match APPLE_TEAM_ID"
+          [ "$(pb Entitlements:get-task-allow || true)" = false ] || fail "get-task-allow is not false (not a distribution profile)"
+          ! pb ProvisionedDevices >/dev/null || fail "profile lists devices (development/ad hoc, not App Store Connect)"
+
+          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                     "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$dir"
+            cp "$profile" "$dir/$uuid.mobileprovision"
+          done
+          {
+            echo "PROFILE_UUID=$uuid"
+            echo "PROFILE_NAME=$name"
+          } >> "$GITHUB_ENV"
+          echo "Provisioning profile $name ($uuid): PASS"
+
+      - name: Archive with manual Apple Distribution signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project Vault.xcodeproj \
+            -scheme Vault-App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Watchlink.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/watchlink-derived" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            MARKETING_VERSION=0.1.0 \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+          test -d "$RUNNER_TEMP/Watchlink.xcarchive/Products/Applications/Vault-App.app" \
+            || { echo "::error::archive has no Vault-App.app"; exit 1; }
+
+      - name: Export IPA for App Store Connect (no upload)
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          options="$RUNNER_TEMP/watchlink-ExportOptions.plist"
+          export_dir="$RUNNER_TEMP/watchlink-export"
+          # PROFILE_NAME and the team ID were verified against fixed values in the
+          # profile step, so they are safe to interpolate into XML.
+          # destination=export writes the IPA locally; `upload` would send it to Apple.
+          cat > "$options" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>Apple Distribution</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$BUNDLE_ID</key><string>$PROFILE_NAME</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$options" >/dev/null || { echo "::error::ExportOptions.plist is invalid"; exit 1; }
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Watchlink.xcarchive" \
+            -exportPath "$export_dir" \
+            -exportOptionsPlist "$options"
+
+          count="$(find "$export_dir" -maxdepth 1 -name '*.ipa' | wc -l | tr -d ' ')"
+          if [ "$count" != 1 ]; then
+            echo "::error::expected exactly one .ipa in export, found $count"
+            exit 1
+          fi
+          echo "IPA_PATH=$(find "$export_dir" -maxdepth 1 -name '*.ipa')" >> "$GITHUB_ENV"
+
+      - name: Verify signed IPA
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          unzip_dir="$RUNNER_TEMP/watchlink-ipa"
+          unzip -q "$IPA_PATH" -d "$unzip_dir"
+          fail() { echo "::error::IPA verification: $1"; exit 1; }
+
+          apps="$(find "$unzip_dir/Payload" -maxdepth 1 -name '*.app')"
+          [ "$(printf '%s\n' "$apps" | grep -c .)" = 1 ] || fail "expected exactly one .app in Payload"
+          app="$apps"
+          [ "$(basename "$app")" = Vault-App.app ] || fail "app bundle is $(basename "$app")"
+
+          plist_expect() {
+            actual="$(/usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist" 2>/dev/null || true)"
+            [ "$actual" = "$2" ] || fail "Info.plist $1 is '$actual', expected '$2'"
+          }
+          plist_expect CFBundleIdentifier "$BUNDLE_ID"
+          plist_expect CFBundleDisplayName Watchlink
+          plist_expect CFBundleExecutable Vault-App
+          plist_expect CFBundleShortVersionString 0.1.0
+          plist_expect CFBundleVersion "$BUILD_NUMBER"
+
+          codesign --verify --deep --strict "$app" || fail "codesign verification failed"
+          signature="$(codesign -dvv "$app" 2>&1)"
+          authority="$(printf '%s\n' "$signature" | sed -n 's/^Authority=//p' | head -n 1)"
+          case "$authority" in
+            "Apple Distribution: "*"($APPLE_TEAM_ID)") ;;
+            *) fail "leaf signing authority is not Apple Distribution for APPLE_TEAM_ID" ;;
+          esac
+          [ "$(printf '%s\n' "$signature" | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID" ] \
+            || fail "signature TeamIdentifier does not match APPLE_TEAM_ID"
+
+          [ -f "$app/embedded.mobileprovision" ] || fail "embedded.mobileprovision missing"
+          embedded="$RUNNER_TEMP/watchlink-embedded.plist"
+          security cms -D -i "$app/embedded.mobileprovision" > "$embedded" 2>/dev/null
+          ep() { /usr/libexec/PlistBuddy -c "Print :$1" "$embedded" 2>/dev/null || true; }
+          [ "$(ep UUID)" = "$PROFILE_UUID" ] || fail "embedded profile UUID does not match installed profile"
+          [ "$(ep Entitlements:application-identifier)" = "$APPLE_TEAM_ID.$BUNDLE_ID" ] \
+            || fail "embedded application-identifier does not match"
+          [ "$(ep TeamIdentifier:0)" = "$APPLE_TEAM_ID" ] || fail "embedded TeamIdentifier does not match"
+
+          entitlements="$RUNNER_TEMP/watchlink-entitlements.plist"
+          codesign -d --entitlements - --xml "$app" > "$entitlements" 2>/dev/null
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :get-task-allow' "$entitlements" 2>/dev/null || echo false)" = false ] \
+            || fail "signed binary has get-task-allow=true"
+
+          echo "Signed IPA verification: PASS (build $BUILD_NUMBER)"
+
+      # ---- Everything below runs only when upload was explicitly requested. ----
+
+      - name: Validate IPA with App Store Connect
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload == true }}
+        env:
+          UPLOAD_REQUESTED: ${{ inputs.upload }}
+          ASC_PRIVATE_KEY_B64: ${{ secrets.ASC_PRIVATE_KEY_B64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          [ "$UPLOAD_REQUESTED" = true ] || { echo "::error::upload not requested"; exit 1; }
+          umask 077
+          key_dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$key_dir"
+          printf '%s' "$ASC_PRIVATE_KEY_B64" | base64 --decode > "$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --validate-app -f "$IPA_PATH" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Upload IPA to App Store Connect/TestFlight
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload == true }}
+        env:
+          UPLOAD_REQUESTED: ${{ inputs.upload }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          [ "$UPLOAD_REQUESTED" = true ] || { echo "::error::upload not requested"; exit 1; }
+          xcrun altool --upload-app -f "$IPA_PATH" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      - name: Clean up signing material and build outputs
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          security delete-keychain "$RUNNER_TEMP/watchlink-signing.keychain-db" 2>/dev/null || true
+          if [ -n "${PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision" \
+                  "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          fi
+          rm -f "$HOME"/.appstoreconnect/private_keys/AuthKey_*.p8
+          rm -rf "$RUNNER_TEMP"/watchlink-* "$RUNNER_TEMP/Watchlink.xcarchive"
+          echo "Cleanup complete"

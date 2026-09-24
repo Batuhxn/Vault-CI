@@ -3,3 +3,5 @@
 DerivedData/
 xcuserdata/
 /build/
+__pycache__/
+*.pyc

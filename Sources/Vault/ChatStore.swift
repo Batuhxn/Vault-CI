@@ -5,7 +5,7 @@ import Observation
 ///
 /// The list is seeded with dummy messages, appends every locally-composed
 /// message right away, and — as of M2.1 — appends messages relayed from other
-/// connected VAULT clients. Outgoing text is also mirrored to the local relay
+/// connected Watchlink clients. Outgoing text is also mirrored to the local relay
 /// (see `RelayClient`) on a best-effort basis; the relay never affects local
 /// behaviour, and if it is unavailable local chat is unchanged.
 ///
@@ -17,11 +17,11 @@ import Observation
 final class ChatStore {
     private(set) var messages: [ChatMessage]
 
-    @ObservationIgnored private let relay: RelayClient
+    @ObservationIgnored private let relay: any RelayTransport
 
     init(
         messages: [ChatMessage] = ChatStore.sampleMessages,
-        relay: RelayClient = RelayClient()
+        relay: any RelayTransport = RelayClient()
     ) {
         self.messages = messages
         self.relay = relay
@@ -89,3 +89,14 @@ final class ChatStore {
         return formatter
     }()
 }
+
+/// The three relay operations `ChatStore` uses. `RelayClient` is the only
+/// production conformer; the protocol exists so tests can substitute a fake
+/// transport without opening a socket.
+protocol RelayTransport: AnyObject {
+    func onReceive(_ handler: @escaping @Sendable (String) -> Void)
+    func start()
+    func send(text: String)
+}
+
+extension RelayClient: RelayTransport {}

@@ -6,8 +6,8 @@ import Foundation
 /// a developer computer running the test relay. The address is hard-coded on
 /// purpose — there is no Bonjour discovery in this milestone.
 ///
-/// Public CI snapshot: the endpoint is a loopback placeholder. Point it at a
-/// relay on your own local network to test; never at a public host.
+/// The public CI mirror is generated with `host` rewritten to the loopback
+/// placeholder `127.0.0.1`. Never point it at a public host.
 ///
 /// This is not the production transport: traffic is plaintext and
 /// unauthenticated.

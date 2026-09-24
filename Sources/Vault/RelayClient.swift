@@ -15,7 +15,7 @@ import Network
 /// a client never receives its own frame back.
 ///
 /// `@unchecked Sendable`: mutable state (`connection`, `currentState`,
-/// `receiveBuffer`, `messageHandler`, keep-alive/recovery flags) is confined to
+/// `decoder`, `messageHandler`, keep-alive/recovery flags) is confined to
 /// the private serial `queue`; every other stored property is an immutable
 /// value.
 final class RelayClient: @unchecked Sendable {
@@ -29,7 +29,7 @@ final class RelayClient: @unchecked Sendable {
 
     /// Bytes received from the current connection that have not yet been split
     /// into complete newline-delimited frames. Accessed only on `queue`.
-    private var receiveBuffer = Data()
+    private var decoder = RelayFrameDecoder()
 
     /// Called with the `text` of every complete, valid frame received from the
     /// relay. Invoked on `queue`; the handler hops to whatever context it
@@ -89,13 +89,9 @@ final class RelayClient: @unchecked Sendable {
     // MARK: - Delivery (send path — unchanged behaviour)
 
     private func deliver(_ message: RelayMessage) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-
         let line: Data
         do {
-            line = try encoder.encode(message) + Data([0x0A]) // trailing "\n"
+            line = try Self.encodeFrame(message)
         } catch {
             log("encode failed: \(error)")
             return
@@ -107,6 +103,20 @@ final class RelayClient: @unchecked Sendable {
             self.log("send failed: \(error)")
             self.resetConnection()
         })
+    }
+
+    /// Serialises one outbound frame: sorted-key JSON, ISO-8601 `sentAt`,
+    /// trailing `\n`. Internal (not private) only so tests can pin the wire
+    /// format.
+    static func encodeFrame(text: String, sentAt: Date) throws -> Data {
+        try encodeFrame(RelayMessage(text: text, sentAt: sentAt))
+    }
+
+    private static func encodeFrame(_ message: RelayMessage) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(message) + Data([0x0A]) // trailing "\n"
     }
 
     /// Returns a connection that can carry a new send, creating one if needed.
@@ -135,7 +145,7 @@ final class RelayClient: @unchecked Sendable {
 
     private func makeConnection() -> NWConnection {
         currentState = .setup
-        receiveBuffer.removeAll(keepingCapacity: false)
+        decoder = RelayFrameDecoder()
 
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(configuration.host),
@@ -176,7 +186,7 @@ final class RelayClient: @unchecked Sendable {
         connection?.cancel()
         connection = nil
         currentState = .cancelled
-        receiveBuffer.removeAll(keepingCapacity: false)
+        decoder = RelayFrameDecoder()
         if reconnect {
             scheduleRecovery()
         }
@@ -184,8 +194,8 @@ final class RelayClient: @unchecked Sendable {
 
     // MARK: - Receive path
 
-    /// Arms one `receive` on `connection`. On completion the bytes are appended
-    /// to `receiveBuffer`, every complete `\n`-delimited frame is decoded and
+    /// Arms one `receive` on `connection`. On completion the bytes are fed to
+    /// `decoder`, every complete `\n`-delimited frame is decoded and
     /// dispatched, and — unless the stream ended or errored — another `receive`
     /// is armed. A single callback may carry zero, part of one, or several
     /// frames; none of those cases is assumed. Callbacks from a connection that
@@ -197,8 +207,7 @@ final class RelayClient: @unchecked Sendable {
             guard connection === self.connection else { return }
 
             if let data, !data.isEmpty {
-                self.receiveBuffer.append(data)
-                self.drainFrames()
+                self.dispatch(self.decoder.append(data))
             }
 
             if let error {
@@ -215,32 +224,19 @@ final class RelayClient: @unchecked Sendable {
         }
     }
 
-    /// Splits `receiveBuffer` on `\n`, decoding and dispatching each complete
-    /// frame and leaving any partial trailing frame buffered for the next read.
-    private func drainFrames() {
-        let newline: UInt8 = 0x0A
-        while let index = receiveBuffer.firstIndex(of: newline) {
-            let frame = Data(receiveBuffer.prefix(upTo: index))
-            receiveBuffer = Data(receiveBuffer.suffix(from: receiveBuffer.index(after: index)))
-            handleFrame(frame)
+    /// Hands each decoded frame to the handler, in arrival order. Anything
+    /// that is not a JSON object carrying a non-empty `text` is logged and
+    /// dropped — a malformed frame must never crash the app or stop the
+    /// receive loop.
+    private func dispatch(_ frames: [RelayFrameDecoder.Frame]) {
+        for frame in frames {
+            switch frame {
+            case .text(let text):
+                messageHandler?(text)
+            case .malformed(let byteCount):
+                log("ignored malformed frame (\(byteCount) bytes)")
+            }
         }
-    }
-
-    /// Decodes one complete frame. Anything that is not a JSON object carrying a
-    /// non-empty `text` is logged and dropped — a malformed frame must never
-    /// crash the app or stop the receive loop.
-    private func handleFrame(_ frame: Data) {
-        let isAllWhitespace = !frame.contains { $0 != 0x20 && $0 != 0x09 && $0 != 0x0D }
-        guard !isAllWhitespace else { return }
-
-        guard
-            let incoming = try? JSONDecoder().decode(IncomingRelayMessage.self, from: frame),
-            !incoming.text.isEmpty
-        else {
-            log("ignored malformed frame (\(frame.count) bytes)")
-            return
-        }
-        messageHandler?(incoming.text)
     }
 
     // MARK: - Recovery (keep-alive mode: listeners survive a drop or a park)
@@ -297,8 +293,53 @@ private struct RelayMessage: Encodable {
     let sentAt: Date
 }
 
-/// The fields VAULT reads from an inbound relay frame. `type` and `sentAt` are
-/// accepted on the wire but ignored here: M2.1 only needs the text.
+/// Splits a byte stream on `\n` into frames and decodes each one. A single
+/// `append` may carry zero, part of one, or several frames; a partial trailing
+/// frame stays buffered for the next call. Whitespace-only frames (space, tab,
+/// CR) are skipped silently.
+///
+/// Pure value type, extracted from `RelayClient` so framing can be unit
+/// tested without a socket. `RelayClient` confines its instance to `queue`.
+struct RelayFrameDecoder {
+    enum Frame: Equatable {
+        case text(String)
+        case malformed(byteCount: Int)
+    }
+
+    private var buffer = Data()
+
+    mutating func append(_ data: Data) -> [Frame] {
+        buffer.append(data)
+        var frames: [Frame] = []
+        let newline: UInt8 = 0x0A
+        while let index = buffer.firstIndex(of: newline) {
+            let frame = Data(buffer.prefix(upTo: index))
+            buffer = Data(buffer.suffix(from: buffer.index(after: index)))
+            if let decoded = Self.decode(frame) {
+                frames.append(decoded)
+            }
+        }
+        return frames
+    }
+
+    /// `nil` for a whitespace-only frame; `.malformed` for anything that is not
+    /// a JSON object carrying a non-empty `text`.
+    static func decode(_ frame: Data) -> Frame? {
+        let isAllWhitespace = !frame.contains { $0 != 0x20 && $0 != 0x09 && $0 != 0x0D }
+        guard !isAllWhitespace else { return nil }
+
+        guard
+            let incoming = try? JSONDecoder().decode(IncomingRelayMessage.self, from: frame),
+            !incoming.text.isEmpty
+        else {
+            return .malformed(byteCount: frame.count)
+        }
+        return .text(incoming.text)
+    }
+}
+
+/// The fields Watchlink reads from an inbound relay frame. `type` and `sentAt`
+/// are accepted on the wire but ignored here: M2.1 only needs the text.
 private struct IncomingRelayMessage: Decodable {
     let text: String
 }

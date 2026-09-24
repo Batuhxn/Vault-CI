@@ -1,6 +1,8 @@
-name: Production VAULT iOS build
+name: Production Watchlink iOS build
 
-# M0.1 unsigned build proof only. No signing, no Apple credentials, no upload.
+# Unit tests + unsigned build proof only. No signing, no Apple credentials, no
+# upload. Manual only: the public mirror must not spend macOS runner time on
+# arbitrary pull requests.
 on:
   workflow_dispatch:
 
@@ -10,13 +12,19 @@ permissions:
 jobs:
   unsigned-device-builds:
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           submodules: false
+
+      - name: Check production source for plaintext message logging
+        run: |
+          set -euo pipefail
+          python3 scripts/check-no-plaintext-logging.py --self-test
+          python3 scripts/check-no-plaintext-logging.py Sources/Vault
 
       - name: Select Xcode 26.3
         run: |
@@ -37,6 +45,48 @@ jobs:
           xcodegen --version
           xcodegen generate --spec project.yml
 
+      - name: Run production unit tests on an iOS Simulator
+        run: |
+          set -euo pipefail
+          # Only destinations xcodebuild itself reports as compatible with this
+          # scheme are considered. Pick the newest iOS version, then the
+          # alphabetically first iPhone name, so the choice is deterministic
+          # for a given runner image and never depends on a hard-coded model.
+          destinations="$(xcodebuild -project Vault.xcodeproj -scheme Vault-App -showdestinations)"
+          udid="$(printf '%s\n' "$destinations" | python3 -c '
+          import re, sys
+          found = []
+          for line in sys.stdin:
+              if "platform:iOS Simulator" not in line:
+                  continue
+              fields = dict(re.findall(r"(\w+):([^,}]+?)\s*(?=,|\})", line))
+              os_version, name, udid = fields.get("OS"), fields.get("name", ""), fields.get("id", "")
+              if "error:" in line or not os_version or not name.startswith("iPhone") or "placeholder" in udid:
+                  continue
+              version = tuple(int(part) for part in os_version.split("."))
+              if version < (17, 0):
+                  continue
+              found.append((version, name, udid))
+          if not found:
+              sys.exit("no compatible iPhone simulator (iOS 17+) reported by xcodebuild -showdestinations")
+          found.sort(key=lambda d: ([-part for part in d[0]], d[1]))
+          version, name, udid = found[0]
+          shown = ".".join(map(str, version))
+          print(f"Selected simulator: {name} (iOS {shown})", file=sys.stderr)
+          print(udid)
+          ')" || {
+            echo "::error::no compatible iOS Simulator found. xcodebuild reported:"
+            printf '%s\n' "$destinations"
+            exit 1
+          }
+
+          xcodebuild test \
+            -project Vault.xcodeproj \
+            -scheme Vault-App \
+            -destination "platform=iOS Simulator,id=$udid" \
+            -derivedDataPath "$RUNNER_TEMP/VaultTestDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+
       - name: Build Debug and Release for iPhone without signing
         run: |
           set -euo pipefail
@@ -51,6 +101,8 @@ jobs:
               CODE_SIGNING_ALLOWED=NO \
               build
 
+            # Only the Vault-App target's block: the scheme also contains the
+            # test target, whose settings must never satisfy these checks.
             settings="$(xcodebuild \
               -project Vault.xcodeproj \
               -scheme Vault-App \
@@ -58,7 +110,12 @@ jobs:
               -sdk iphoneos \
               -destination 'generic/platform=iOS' \
               CODE_SIGNING_ALLOWED=NO \
-              -showBuildSettings)"
+              -showBuildSettings \
+              | sed -n '/^Build settings for action build and target Vault-App:$/,/^Build settings for /p')"
+            if [ -z "$settings" ]; then
+              echo "::error::$configuration build settings for target Vault-App not found"
+              exit 1
+            fi
             setting() {
               printf '%s\n' "$settings" | sed -n "s/^[[:space:]]*$1 = //p" | head -n 1
             }
@@ -94,6 +151,7 @@ jobs:
             test -f "$app/Vault-App" || { echo "::error::missing $configuration executable"; exit 1; }
             test -f "$plist" || { echo "::error::missing $configuration Info.plist"; exit 1; }
             test ! -e "$app/_CodeSignature" || { echo "::error::$configuration app is signed"; exit 1; }
+            test ! -e "$app/PlugIns" || { echo "::error::$configuration app embeds PlugIns (test bundle leaked into build)"; exit 1; }
             plist_expect() {
               actual="$(/usr/libexec/PlistBuddy -c "Print :$1" "$plist")"
               if [ "$actual" != "$2" ]; then

@@ -45,12 +45,38 @@ targets:
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
 
+  # Unit tests for the production app only (never spike code). NOT hosted:
+  # the bundle compiles the production sources itself, minus the `@main`
+  # entry point, so running tests never launches Vault-App, never builds
+  # ChatView's default RelayClient, and never opens a socket.
+  Vault-AppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Sources/Vault
+        excludes:
+          - VaultApp.swift
+      - path: Tests/Vault-AppTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+
 schemes:
   Vault-App:
     build:
       targets:
         Vault-App: all
+        # Built for testing only: never part of build/run/archive, so the
+        # test bundle cannot end up inside a shipped IPA.
+        Vault-AppTests: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - Vault-AppTests
     archive:
       config: Release

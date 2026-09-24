@@ -31,8 +31,8 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(relay.startCount, 1)
     }
 
-    func testDefaultStoreIsSeededWithSampleMessages() {
-        XCTAssertEqual(ChatStore(relay: FakeRelay()).messages, ChatStore.sampleMessages)
+    func testDefaultStoreStartsEmpty() {
+        XCTAssertTrue(ChatStore(relay: FakeRelay()).messages.isEmpty)
     }
 
     func testValidSendCreatesExactlyOneOutgoingMessageAndOneRelaySend() {

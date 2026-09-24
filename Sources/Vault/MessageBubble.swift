@@ -1,3 +1,5 @@
+#if DEBUG
+// Legacy plaintext LAN demo; excluded from Release and unreachable from WatchlinkRootView.
 import SwiftUI
 
 /// A single message row: the coloured bubble plus its timestamp, pushed to the
@@ -40,3 +42,5 @@ struct MessageBubble: View {
         }
     }
 }
+
+#endif

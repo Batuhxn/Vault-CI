@@ -1,3 +1,5 @@
+#if DEBUG
+// Legacy plaintext LAN demo; excluded from Release and unreachable from WatchlinkRootView.
 import Foundation
 import Network
 
@@ -343,3 +345,5 @@ struct RelayFrameDecoder {
 private struct IncomingRelayMessage: Decodable {
     let text: String
 }
+
+#endif

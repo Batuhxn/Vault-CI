@@ -1,10 +1,12 @@
+#if DEBUG
+// Legacy plaintext LAN demo; excluded from Release and unreachable from WatchlinkRootView.
 import Foundation
 import Observation
 
 /// Holds the chat's message list and the logic for adding to it.
 ///
-/// The list is seeded with dummy messages, appends every locally-composed
-/// message right away, and — as of M2.1 — appends messages relayed from other
+/// The list starts empty, appends every locally-composed message right away,
+/// and — as of M2.1 — appends messages relayed from other
 /// connected Watchlink clients. Outgoing text is also mirrored to the local relay
 /// (see `RelayClient`) on a best-effort basis; the relay never affects local
 /// behaviour, and if it is unavailable local chat is unchanged.
@@ -20,7 +22,7 @@ final class ChatStore {
     @ObservationIgnored private let relay: any RelayTransport
 
     init(
-        messages: [ChatMessage] = ChatStore.sampleMessages,
+        messages: [ChatMessage] = [],
         relay: any RelayTransport = RelayClient()
     ) {
         self.messages = messages
@@ -73,14 +75,6 @@ final class ChatStore {
         )
     }
 
-    // MARK: - Seed data
-
-    static let sampleMessages: [ChatMessage] = [
-        ChatMessage(text: "Vault online.", isMine: false, time: "04:58"),
-        ChatMessage(text: "Native SwiftUI sonunda çalışıyor.", isMine: true, time: "04:59"),
-        ChatMessage(text: "Şimdilik sadece local chat.", isMine: false, time: "05:00"),
-    ]
-
     // MARK: - Formatting
 
     private static let timeFormatter: DateFormatter = {
@@ -100,3 +94,5 @@ protocol RelayTransport: AnyObject {
 }
 
 extension RelayClient: RelayTransport {}
+
+#endif

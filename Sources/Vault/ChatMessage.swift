@@ -1,3 +1,5 @@
+#if DEBUG
+// Legacy plaintext LAN demo; excluded from Release and unreachable from WatchlinkRootView.
 import Foundation
 
 /// A single chat message shown in the conversation.
@@ -10,3 +12,5 @@ struct ChatMessage: Identifiable, Equatable {
     let isMine: Bool
     let time: String
 }
+
+#endif

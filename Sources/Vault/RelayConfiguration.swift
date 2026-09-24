@@ -1,3 +1,5 @@
+#if DEBUG
+// Legacy plaintext LAN demo; excluded from Release and unreachable from WatchlinkRootView.
 import Foundation
 
 /// Location of the M2 test relay.
@@ -17,3 +19,5 @@ struct RelayConfiguration {
 
     static let `default` = RelayConfiguration(host: "127.0.0.1", port: 8787)
 }
+
+#endif

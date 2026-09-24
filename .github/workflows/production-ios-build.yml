@@ -45,51 +45,141 @@ jobs:
           xcodegen --version
           xcodegen generate --spec project.yml
 
-      - name: Run production unit tests on an iOS Simulator
+      # Toolchain split (deliberate, temporary; see docs/CI_OPEN_ISSUES.md CI-2):
+      # Xcode 26.3 is the canonical production build toolchain. GitHub's
+      # macos-26 image does not install a concrete simulator runtime for it, so
+      # the XCTest target is first COMPILED under 26.3 (build-for-testing, no
+      # simulator needed), then EXECUTED with the preinstalled Xcode 26.2 and
+      # its iOS 26.2 runtime. Every production build step runs under 26.3.
+      # This must not silently become the permanent architecture.
+      - name: Compile unit tests with Xcode 26.3 (build-for-testing, no simulator)
         run: |
           set -euo pipefail
-          # Only destinations xcodebuild itself reports as compatible with this
-          # scheme are considered. Pick the newest iOS version, then the
-          # alphabetically first iPhone name, so the choice is deterministic
-          # for a given runner image and never depends on a hard-coded model.
-          destinations="$(xcodebuild -project Vault.xcodeproj -scheme Vault-App -showdestinations)"
-          udid="$(printf '%s\n' "$destinations" | python3 -c '
-          import re, sys
-          found = []
-          for line in sys.stdin:
-              if "platform:iOS Simulator" not in line:
-                  continue
-              fields = dict(re.findall(r"(\w+):([^,}]+?)\s*(?=,|\})", line))
-              os_version, name, udid = fields.get("OS"), fields.get("name", ""), fields.get("id", "")
-              if "error:" in line or not os_version or not name.startswith("iPhone") or "placeholder" in udid:
-                  continue
-              version = tuple(int(part) for part in os_version.split("."))
-              if version < (17, 0):
-                  continue
-              found.append((version, name, udid))
-          if not found:
-              sys.exit("no compatible iPhone simulator (iOS 17+) reported by xcodebuild -showdestinations")
-          found.sort(key=lambda d: ([-part for part in d[0]], d[1]))
-          version, name, udid = found[0]
-          shown = ".".join(map(str, version))
-          print(f"Selected simulator: {name} (iOS {shown})", file=sys.stderr)
-          print(udid)
-          ')" || {
-            echo "::error::no compatible iOS Simulator found. xcodebuild reported:"
-            printf '%s\n' "$destinations"
-            exit 1
-          }
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+          xcodebuild build-for-testing \
+            -project Vault.xcodeproj \
+            -scheme Vault-App \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/WatchlinkTestCompileDerivedData" \
+            CODE_SIGNING_ALLOWED=NO
+          echo "Xcode 26.3 build-for-testing: PASS"
 
+      - name: Select Xcode 26.2 and an iOS Simulator for test execution
+        run: |
+          set -euo pipefail
+          xcode_path=/Applications/Xcode_26.2.app
+          if [ ! -d "$xcode_path" ]; then
+            echo "::error::$xcode_path not found on this runner image. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_path"
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.2
+          sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          echo "Xcode 26.2 iphonesimulator SDK: $sdk"
+
+          echo "::group::xcrun simctl list runtimes"
+          xcrun simctl list runtimes
+          echo "::endgroup::"
+          echo "::group::xcrun simctl list devices available"
+          xcrun simctl list devices available
+          echo "::endgroup::"
+
+          xcrun simctl list runtimes available -j > "$RUNNER_TEMP/sim-runtimes.json"
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/sim-devices.json"
+          cat > "$RUNNER_TEMP/pick-simulator.py" <<'PY'
+          import json, sys
+
+          def version(text):
+              return tuple(int(part) for part in text.split(".")[:2])
+
+          sdk = version(sys.argv[1])
+          runtimes = [
+              r for r in json.load(open(sys.argv[2]))["runtimes"]
+              if r.get("isAvailable") and "SimRuntime.iOS-" in r.get("identifier", "")
+              and (17, 0) <= version(r["version"]) <= sdk
+          ]
+          if not runtimes:
+              sys.exit(f"no available iOS 17+ simulator runtime compatible with SDK {sys.argv[1]}")
+          # Prefer the runtime matching this Xcode's simulator SDK, then the newest.
+          runtimes.sort(key=lambda r: (version(r["version"]) != sdk, [-p for p in version(r["version"])]))
+          runtime = runtimes[0]
+
+          devices = sorted(
+              (d for d in json.load(open(sys.argv[3]))["devices"].get(runtime["identifier"], [])
+               if d.get("isAvailable") and d["name"].startswith("iPhone")),
+              key=lambda d: d["name"],
+          )
+          device_types = sorted(
+              (t for t in runtime.get("supportedDeviceTypes", []) if t.get("productFamily") == "iPhone"),
+              key=lambda t: t["name"],
+          )
+          if not devices and not device_types:
+              sys.exit(f"runtime {runtime['identifier']} has no iPhone device or device type")
+          print(runtime["identifier"], runtime["version"],
+                devices[0]["udid"] if devices else "-",
+                device_types[0]["identifier"] if device_types else "-")
+          PY
+          read -r runtime_id runtime_version udid device_type < <(
+            python3 "$RUNNER_TEMP/pick-simulator.py" "$sdk" \
+              "$RUNNER_TEMP/sim-runtimes.json" "$RUNNER_TEMP/sim-devices.json")
+          test -n "${runtime_id:-}" || { echo "::error::no usable iOS Simulator runtime"; exit 1; }
+
+          if [ "$udid" = "-" ]; then
+            udid="$(xcrun simctl create Watchlink-CI "$device_type" "$runtime_id")"
+            echo "WATCHLINK_CI_CREATED_SIM=$udid" >> "$GITHUB_ENV"
+            echo "Simulator: created Watchlink-CI ($device_type) on $runtime_id [$udid]"
+          else
+            echo "Simulator: pre-existing device [$udid] on $runtime_id"
+          fi
+          echo "WATCHLINK_TEST_SIM=$udid" >> "$GITHUB_ENV"
+          echo "Test runtime: iOS $runtime_version"
+
+      - name: Run production unit tests with Xcode 26.2
+        run: |
+          set -euo pipefail
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.2
+          log="$RUNNER_TEMP/watchlink-unit-tests.log"
           xcodebuild test \
             -project Vault.xcodeproj \
             -scheme Vault-App \
-            -destination "platform=iOS Simulator,id=$udid" \
-            -derivedDataPath "$RUNNER_TEMP/VaultTestDerivedData" \
-            CODE_SIGNING_ALLOWED=NO
+            -destination "platform=iOS Simulator,id=$WATCHLINK_TEST_SIM" \
+            -derivedDataPath "$RUNNER_TEMP/WatchlinkTestRunDerivedData" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$log"
+
+          # Last "Executed N tests, with M failures" line is the all-tests total.
+          summary="$(grep -E 'Executed [0-9]+ tests?, with [0-9]+ failures?' "$log" | tail -n 1)"
+          executed="$(printf '%s' "$summary" | sed -E 's/.*Executed ([0-9]+) tests?.*/\1/')"
+          failures="$(printf '%s' "$summary" | sed -E 's/.*with ([0-9]+) failures?.*/\1/')"
+          echo "XCTest summary: ${summary:-<none>}"
+          [ -n "$executed" ] && [ "$executed" -ge 19 ] && [ "$failures" = 0 ] \
+            || { echo "::error::expected >= 19 executed XCTest cases with 0 failures"; exit 1; }
+          # RelayClient logs every connection attempt as "[relay] ...". Tests are
+          # non-hosted and use a fake transport, so none may appear.
+          if grep -q '\[relay\]' "$log"; then
+            echo "::error::a real RelayClient was active during unit tests"
+            exit 1
+          fi
+          echo "Unit tests: PASS ($executed executed, 0 failures, no relay activity)"
+
+      - name: Delete the CI-created simulator
+        if: ${{ always() && env.WATCHLINK_CI_CREATED_SIM != '' }}
+        run: |
+          set -uo pipefail
+          xcrun simctl shutdown "$WATCHLINK_CI_CREATED_SIM" 2>/dev/null || true
+          xcrun simctl delete "$WATCHLINK_CI_CREATED_SIM"
+
+      - name: Re-select Xcode 26.3 for production builds
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          xcodebuild -version
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
 
       - name: Build Debug and Release for iPhone without signing
         run: |
           set -euo pipefail
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
           for configuration in Debug Release; do
             xcodebuild \
               -project Vault.xcodeproj \

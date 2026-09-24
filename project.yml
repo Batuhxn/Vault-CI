@@ -1,0 +1,56 @@
+# Production iOS app. Generate Vault.xcodeproj with XcodeGen on macOS.
+# The bundle ID is a default; override PRODUCT_BUNDLE_IDENTIFIER at build time
+# if the Apple Developer team registers a different identifier.
+name: Vault
+
+configs:
+  Debug: debug
+  Release: release
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  Vault-App:
+    type: application
+    platform: iOS
+    attributes:
+      ProvisioningStyle: Automatic
+    sources:
+      - path: Sources/Vault
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.vault
+        PRODUCT_NAME: Vault-App
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: VAULT
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "VAULT connects directly to your paired computer on the local network to relay messages."
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+schemes:
+  Vault-App:
+    build:
+      targets:
+        Vault-App: all
+    run:
+      config: Debug
+    archive:
+      config: Release

@@ -1,0 +1,111 @@
+name: Production VAULT iOS build
+
+# M0.1 unsigned build proof only. No signing, no Apple credentials, no upload.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-device-builds:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Select Xcode 26.3
+        run: |
+          set -euo pipefail
+          xcode_path=/Applications/Xcode_26.3.app
+          if [ ! -d "$xcode_path" ]; then
+            echo "::error::$xcode_path not found on this runner image. Installed:"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_path"
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+
+      - name: Install XcodeGen and generate the production project
+        run: |
+          set -euo pipefail
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen --version
+          xcodegen generate --spec project.yml
+
+      - name: Build Debug and Release for iPhone without signing
+        run: |
+          set -euo pipefail
+          for configuration in Debug Release; do
+            xcodebuild \
+              -project Vault.xcodeproj \
+              -scheme Vault-App \
+              -configuration "$configuration" \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              -derivedDataPath "$RUNNER_TEMP/VaultDerivedData" \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+
+            settings="$(xcodebuild \
+              -project Vault.xcodeproj \
+              -scheme Vault-App \
+              -configuration "$configuration" \
+              -sdk iphoneos \
+              -destination 'generic/platform=iOS' \
+              CODE_SIGNING_ALLOWED=NO \
+              -showBuildSettings)"
+            setting() {
+              printf '%s\n' "$settings" | sed -n "s/^[[:space:]]*$1 = //p" | head -n 1
+            }
+            expect() {
+              actual="$(setting "$1")"
+              if [ "$actual" != "$2" ]; then
+                echo "::error::$configuration $1 is '${actual:-<unset>}', expected '${2:-<unset>}'"
+                exit 1
+              fi
+            }
+            echo "Resolved $configuration production settings:"
+            for key in PRODUCT_BUNDLE_IDENTIFIER PRODUCT_NAME MARKETING_VERSION \
+              CURRENT_PROJECT_VERSION IPHONEOS_DEPLOYMENT_TARGET SWIFT_VERSION \
+              CODE_SIGN_STYLE CODE_SIGNING_ALLOWED DEVELOPMENT_TEAM \
+              CODE_SIGN_IDENTITY PROVISIONING_PROFILE_SPECIFIER; do
+              value="$(setting "$key")"
+              printf '%s=%s\n' "$key" "${value:-<unset>}"
+            done
+            expect PRODUCT_BUNDLE_IDENTIFIER com.batuhxn.vault
+            expect PRODUCT_NAME Vault-App
+            expect MARKETING_VERSION 0.1.0
+            expect CURRENT_PROJECT_VERSION 1
+            expect IPHONEOS_DEPLOYMENT_TARGET 17.0
+            expect SWIFT_VERSION 5.0
+            expect CODE_SIGN_STYLE Automatic
+            expect CODE_SIGNING_ALLOWED NO
+            expect DEVELOPMENT_TEAM ""
+            expect PROVISIONING_PROFILE_SPECIFIER ""
+
+            app="$RUNNER_TEMP/VaultDerivedData/Build/Products/${configuration}-iphoneos/Vault-App.app"
+            plist="$app/Info.plist"
+            test -d "$app" || { echo "::error::missing $configuration app bundle at $app"; exit 1; }
+            test -f "$app/Vault-App" || { echo "::error::missing $configuration executable"; exit 1; }
+            test -f "$plist" || { echo "::error::missing $configuration Info.plist"; exit 1; }
+            test ! -e "$app/_CodeSignature" || { echo "::error::$configuration app is signed"; exit 1; }
+            plist_expect() {
+              actual="$(/usr/libexec/PlistBuddy -c "Print :$1" "$plist")"
+              if [ "$actual" != "$2" ]; then
+                echo "::error::$configuration Info.plist $1 is '$actual', expected '$2'"
+                exit 1
+              fi
+            }
+            plist_expect CFBundleIdentifier com.batuhxn.vault
+            plist_expect CFBundleExecutable Vault-App
+            plist_expect CFBundleShortVersionString 0.1.0
+            plist_expect CFBundleVersion 1
+            plist_expect MinimumOSVersion 17.0
+            lipo -archs "$app/Vault-App" | grep -qw arm64 || { echo "::error::$configuration binary is not arm64"; exit 1; }
+            echo "$configuration unsigned iPhoneOS app and metadata: PASS"
+          done

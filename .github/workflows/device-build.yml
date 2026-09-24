@@ -1,0 +1,349 @@
+name: Watchlink signed device IPA
+
+# Manual, registered-device Ad Hoc build. Only the encrypted IPA is uploaded.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  device-ipa:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      BUNDLE_ID: com.batuhxn.watchlink
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Select Xcode 26.3
+        run: |
+          set -euo pipefail
+          xcode_path=/Applications/Xcode_26.3.app
+          if [ ! -d "$xcode_path" ]; then
+            echo "::error::Xcode 26.3 is not installed"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode_path"
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+
+      - name: Generate the production project
+        run: |
+          set -euo pipefail
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate --spec project.yml
+
+      - name: Import Apple Distribution identity
+        env:
+          IOS_DIST_P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/watchlink-device"
+          mkdir -p "$work"
+          keychain="$work/signing.keychain-db"
+          p12="$work/distribution.p12"
+          [ -n "$IOS_DIST_P12_B64" ] && [ -n "$IOS_DIST_P12_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ] \
+            || { echo "::error::required signing secret is missing"; exit 1; }
+          printf '%s' "$IOS_DIST_P12_B64" | base64 --decode > "$p12"
+
+          keychain_password="$(openssl rand -base64 32)"
+          security create-keychain -p "$keychain_password" "$keychain" >/dev/null
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -f pkcs12 -t cert \
+            -P "$IOS_DIST_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security >/dev/null 2>&1 \
+            || { echo "::error::Apple Distribution import failed"; exit 1; }
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain" >/dev/null 2>&1
+          security list-keychains -d user | xargs security list-keychains -d user -s "$keychain"
+          rm -f "$p12"
+
+          # Identity and holder names can appear in signing diagnostics. Mask
+          # both before archive/export, without printing the identity list.
+          identities="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/^.*"\(Apple Distribution: .*\)"$/\1/p')"
+          count="$(printf '%s' "$identities" | grep -c . || true)"
+          [ "$count" = 1 ] || { echo "::error::expected one Apple Distribution identity"; exit 1; }
+          holder="$(printf '%s' "$identities" | sed -E 's/^Apple Distribution: (.*) \([A-Z0-9]+\)$/\1/')"
+          echo "::add-mask::$identities"
+          echo "::add-mask::$holder"
+          case "$identities" in
+            *"($APPLE_TEAM_ID)") ;;
+            *) echo "::error::distribution identity does not match team"; exit 1 ;;
+          esac
+          echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
+          echo "Apple Distribution identity: PASS"
+
+      - name: Validate and install Ad Hoc profile
+        env:
+          IOS_ADHOC_PROFILE_B64: ${{ secrets.IOS_ADHOC_PROFILE_B64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          work="$RUNNER_TEMP/watchlink-device"
+          profile="$work/adhoc.mobileprovision"
+          decoded="$work/adhoc.plist"
+          [ -n "$IOS_ADHOC_PROFILE_B64" ] || { echo "::error::Ad Hoc profile secret is missing"; exit 1; }
+          printf '%s' "$IOS_ADHOC_PROFILE_B64" | base64 --decode > "$profile"
+          security cms -D -i "$profile" > "$decoded" 2>/dev/null \
+            || { echo "::error::Ad Hoc profile could not be decoded"; exit 1; }
+
+          # Check the profile's distribution shape without displaying any
+          # profile contents, device IDs, names, or certificate data.
+          python3 - "$decoded" <<'PY'
+          import datetime
+          import os
+          import plistlib
+          import re
+          import subprocess
+          import sys
+
+          def fail(reason):
+              print(f"::error::Ad Hoc profile {reason}")
+              sys.exit(1)
+
+          with open(sys.argv[1], "rb") as source:
+              profile = plistlib.load(source)
+          team = os.environ["APPLE_TEAM_ID"]
+          bundle = os.environ["BUNDLE_ID"]
+          entitlements = profile.get("Entitlements", {})
+          devices = profile.get("ProvisionedDevices")
+          uuid = profile.get("UUID", "")
+          name = profile.get("Name", "")
+          expires = profile.get("ExpirationDate")
+          if profile.get("TeamIdentifier") != [team]:
+              fail("team does not match")
+          if entitlements.get("application-identifier") != f"{team}.{bundle}":
+              fail("application identifier does not match")
+          if entitlements.get("com.apple.developer.team-identifier") not in (None, team):
+              fail("entitlement team does not match")
+          if entitlements.get("get-task-allow") is not False:
+              fail("allows debugging")
+          if not isinstance(devices, list) or not devices or not all(isinstance(d, str) and d for d in devices):
+              fail("has no registered devices")
+          if profile.get("ProvisionsAllDevices") is True:
+              fail("is an enterprise profile")
+          certificates = profile.get("DeveloperCertificates")
+          if not isinstance(certificates, list) or not certificates:
+              fail("has no distribution certificates")
+          distribution_certificate = False
+          for certificate in certificates:
+              check = subprocess.run(
+                  ["openssl", "x509", "-inform", "DER", "-noout", "-subject"],
+                  input=bytes(certificate), capture_output=True,
+              )
+              if check.returncode == 0 and b"Apple Distribution:" in check.stdout \
+                      and f"({team})".encode() in check.stdout:
+                  distribution_certificate = True
+                  break
+          if not distribution_certificate:
+              fail("has no matching Apple Distribution certificate")
+          if "iOS" not in profile.get("Platform", []):
+              fail("is not for iOS")
+          if not isinstance(expires, datetime.datetime) or expires <= datetime.datetime.utcnow():
+              fail("has expired")
+          if not re.fullmatch(r"[0-9A-Fa-f-]{36}", uuid):
+              fail("has an invalid UUID")
+          if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9 ._-]+", name):
+              fail("has an invalid name")
+
+          for value in (profile.get("TeamName"), uuid, name, *devices):
+              if value:
+                  print(f"::add-mask::{value}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write(f"PROFILE_UUID={uuid}\nPROFILE_NAME={name}\n")
+          print("Ad Hoc profile validation: PASS")
+          PY
+
+          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                     "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$dir"
+            uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$decoded")"
+            cp "$profile" "$dir/$uuid.mobileprovision"
+          done
+          echo "Ad Hoc profile installed"
+
+      - name: Archive Release app with manual signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/watchlink-device"
+          xcodebuild archive \
+            -project Vault.xcodeproj \
+            -scheme Vault-App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$work/Watchlink.xcarchive" \
+            -derivedDataPath "$work/derived" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+          test -d "$work/Watchlink.xcarchive/Products/Applications/Vault-App.app" \
+            || { echo "::error::archive has no Watchlink app"; exit 1; }
+
+      - name: Export Ad Hoc IPA
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/watchlink-device"
+          options="$work/ExportOptions.plist"
+          python3 - "$options" <<'PY'
+          import os
+          import plistlib
+          import sys
+
+          options = {
+              "method": "ad-hoc",
+              "destination": "export",
+              "signingStyle": "manual",
+              "signingCertificate": "Apple Distribution",
+              "teamID": os.environ["APPLE_TEAM_ID"],
+              "provisioningProfiles": {os.environ["BUNDLE_ID"]: os.environ["PROFILE_NAME"]},
+          }
+          with open(sys.argv[1], "wb") as output:
+              plistlib.dump(options, output)
+          PY
+          plutil -lint "$options" >/dev/null
+          xcodebuild -exportArchive \
+            -archivePath "$work/Watchlink.xcarchive" \
+            -exportPath "$work/export" \
+            -exportOptionsPlist "$options"
+
+          mapfile -d '' ipas < <(find "$work/export" -maxdepth 1 -type f -name '*.ipa' -print0)
+          [ "${#ipas[@]}" = 1 ] || { echo "::error::expected exactly one IPA"; exit 1; }
+          echo "IPA_PATH=${ipas[0]}" >> "$GITHUB_ENV"
+          echo "Ad Hoc IPA export: PASS"
+
+      - name: Verify signed IPA and embedded profile
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/watchlink-device"
+          unzip -q "$IPA_PATH" -d "$work/unpacked"
+          fail() { echo "::error::IPA verification: $1"; exit 1; }
+          mapfile -d '' apps < <(find "$work/unpacked" -type d -name '*.app' -print0)
+          [ "${#apps[@]}" = 1 ] || fail "expected exactly one app"
+          app="${apps[0]}"
+          [ "$(basename "$app")" = Vault-App.app ] || fail "unexpected app bundle"
+
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist" 2>/dev/null; }
+          [ "$(pb CFBundleIdentifier)" = "$BUNDLE_ID" ] || fail "bundle identifier does not match"
+          [ "$(pb CFBundleDisplayName)" = Watchlink ] || fail "display name does not match"
+
+          codesign --verify --deep --strict "$app" >/dev/null 2>&1 || fail "signature is invalid"
+          signature="$(codesign -dvv "$app" 2>&1)"
+          authority="$(printf '%s\n' "$signature" | sed -n 's/^Authority=//p' | head -n 1)"
+          case "$authority" in
+            "Apple Distribution: "*"($APPLE_TEAM_ID)") ;;
+            *) fail "not signed by Apple Distribution for the expected team" ;;
+          esac
+          [ "$(printf '%s\n' "$signature" | sed -n 's/^TeamIdentifier=//p')" = "$APPLE_TEAM_ID" ] \
+            || fail "signature team does not match"
+
+          [ -f "$app/embedded.mobileprovision" ] || fail "embedded profile is missing"
+          security cms -D -i "$app/embedded.mobileprovision" > "$work/embedded.plist" 2>/dev/null \
+            || fail "embedded profile could not be decoded"
+          codesign -d --entitlements - --xml "$app" > "$work/signed-entitlements.plist" 2>/dev/null \
+            || fail "signed entitlements could not be decoded"
+          python3 - "$work/embedded.plist" "$work/signed-entitlements.plist" <<'PY'
+          import datetime
+          import os
+          import plistlib
+          import sys
+
+          def fail(reason):
+              print(f"::error::IPA verification: {reason}")
+              sys.exit(1)
+
+          with open(sys.argv[1], "rb") as source:
+              profile = plistlib.load(source)
+          with open(sys.argv[2], "rb") as source:
+              signed = plistlib.load(source)
+          team = os.environ["APPLE_TEAM_ID"]
+          app_id = f"{team}.{os.environ['BUNDLE_ID']}"
+          devices = profile.get("ProvisionedDevices")
+          if profile.get("UUID") != os.environ["PROFILE_UUID"]:
+              fail("embedded profile is not the selected profile")
+          if profile.get("TeamIdentifier") != [team]:
+              fail("embedded profile team does not match")
+          if profile.get("Entitlements", {}).get("application-identifier") != app_id:
+              fail("embedded application identifier does not match")
+          if not isinstance(devices, list) or not devices:
+              fail("embedded profile has no registered devices")
+          if profile.get("Entitlements", {}).get("get-task-allow") is not False:
+              fail("embedded profile allows debugging")
+          if profile.get("ProvisionsAllDevices") is True:
+              fail("embedded profile is an enterprise profile")
+          if signed.get("get-task-allow") is not False:
+              fail("signed app allows debugging")
+          if signed.get("application-identifier") != app_id:
+              fail("signed app identifier does not match")
+          print("Signed Ad Hoc IPA verification: PASS")
+          PY
+
+      - name: Encrypt IPA and remove plaintext
+        env:
+          IPA_ARTIFACT_PASSPHRASE: ${{ secrets.IPA_ARTIFACT_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [ -n "$IPA_ARTIFACT_PASSPHRASE" ] || { echo "::error::artifact passphrase is missing"; exit 1; }
+          brew list gnupg >/dev/null 2>&1 || brew install gnupg
+          work="$RUNNER_TEMP/watchlink-device"
+          mkdir -p "$work/encrypted" "$work/gnupg"
+          chmod 700 "$work/gnupg"
+          export GNUPGHOME="$work/gnupg"
+          encrypted="$work/encrypted/Watchlink.ipa.gpg"
+          printf '%s' "$IPA_ARTIFACT_PASSPHRASE" | gpg \
+            --batch --yes --no-tty --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-fd 0 --symmetric --cipher-algo AES256 --force-mdc \
+            --output "$encrypted" "$IPA_PATH"
+          [ -s "$encrypted" ] || { echo "::error::encrypted IPA is missing or empty"; exit 1; }
+          expected="$(shasum -a 256 "$IPA_PATH" | awk '{print $1}')"
+          actual="$(printf '%s' "$IPA_ARTIFACT_PASSPHRASE" | gpg \
+            --batch --yes --no-tty --pinentry-mode loopback --no-symkey-cache \
+            --passphrase-fd 0 --decrypt "$encrypted" 2>/dev/null \
+            | shasum -a 256 | awk '{print $1}')"
+          [ "$actual" = "$expected" ] || { echo "::error::encrypted IPA did not round-trip"; exit 1; }
+          rm -rf "$work/export" "$work/unpacked" "$work/Watchlink.xcarchive" "$work/derived"
+          [ ! -e "$IPA_PATH" ] || { echo "::error::plaintext IPA remains"; exit 1; }
+          [ "$(find "$work/encrypted" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1 ] \
+            || { echo "::error::unexpected encryption output"; exit 1; }
+          echo "Encrypted IPA ready: PASS"
+
+      - name: Upload encrypted IPA only
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Watchlink.ipa.gpg
+          path: ${{ runner.temp }}/watchlink-device/encrypted/Watchlink.ipa.gpg
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Clean up signing material and build outputs
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          security delete-keychain "$RUNNER_TEMP/watchlink-device/signing.keychain-db" >/dev/null 2>&1 || true
+          if [ -n "${PROFILE_UUID:-}" ]; then
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision" \
+                  "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          fi
+          rm -rf "$RUNNER_TEMP/watchlink-device" "$GITHUB_WORKSPACE/Vault.xcodeproj"
+          echo "Cleanup complete"

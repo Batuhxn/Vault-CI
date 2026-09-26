@@ -1,0 +1,101 @@
+name: MLS M1.4 Apple qualification
+
+on:
+  push:
+    branches:
+      - qualification/mls-m14-apple-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apple:
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - name: Checkout qualification branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Select Xcode 26.3
+        run: |
+          test -d /Applications/Xcode_26.3.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+          xcodebuild -version
+      - name: Install Rust and iOS targets
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Verify patches, build and inspect MLS bridge
+        run: bash qualification/mls-m14/build-apple.sh
+      - name: Host-side pinned harness (crash matrix, adversary, all checks)
+        run: bash qualification/mls-m14/host-matrix.sh
+      - name: Generate hosted XCTest project
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen --version
+          cd qualification/mls-m14/host
+          xcodegen generate --spec project.yml
+      - name: Build hosted Swift XCTest target
+        run: |
+          cd qualification/mls-m14/host
+          xcodebuild build-for-testing -project MLSQualificationHost.xcodeproj -scheme MLSQualificationHost \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/MLSDerivedData"
+      - name: Show simulator signing and entitlements
+        run: |
+          products="$RUNNER_TEMP/MLSDerivedData/Build/Products/Debug-iphonesimulator"
+          for bundle in "$products/MLSQualificationHost.app" \
+                        "$products/MLSQualificationHost.app/PlugIns/MLSQualificationHostedTests.xctest"; do
+            codesign -dvv "$bundle" 2>&1 | grep -E '^(Executable|Identifier|Format|Signature|TeamIdentifier)='
+          done
+          find "$RUNNER_TEMP/MLSDerivedData/Build/Intermediates.noindex" -name '*.xcent' -print -exec plutil -p {} \;
+      - name: Run hosted Swift M1.4 lifecycle and peer-trust XCTest
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun simctl list runtimes available -j > "$RUNNER_TEMP/runtimes.json"
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          read -r runtime_id runtime_version udid device_type < <(
+            python3 qualification/mls-m14/pick-simulator.py "$sdk" \
+              "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
+          if [ "$udid" = '-' ]; then
+            udid="$(xcrun simctl create MLS-M14-CI "$device_type" "$runtime_id")"
+          fi
+          echo "Using iOS Simulator $runtime_version"
+          cd qualification/mls-m14/host
+          set +e
+          xcodebuild test -project MLSQualificationHost.xcodeproj -scheme MLSQualificationHost \
+            -destination "platform=iOS Simulator,id=$udid" \
+            -derivedDataPath "$RUNNER_TEMP/MLSDerivedData" \
+            2>&1 | tee "$RUNNER_TEMP/mls-m14-xctest.log"
+          test_status="${PIPESTATUS[0]}"
+          set -e
+          python3 ../check-xctest-log.py "$RUNNER_TEMP/mls-m14-xctest.log"
+          test "$test_status" -eq 0
+      - name: Inspect linked binaries
+        run: |
+          products="$RUNNER_TEMP/MLSDerivedData/Build/Products/Debug-iphonesimulator"
+          tests="$products/MLSQualificationHost.app/PlugIns/MLSQualificationHostedTests.xctest/MLSQualificationHostedTests"
+          for binary in "$products/MLSQualificationHost.app/MLSQualificationHost" "$tests"; do
+            test -f "$binary"
+            file "$binary"
+            xcrun otool -L "$binary" | tee -a "$RUNNER_TEMP/mls-linked-libraries.txt"
+          done
+          xcrun nm -gU "$tests" > "$RUNNER_TEMP/mls-symbols.txt"
+          grep -q _uniffi_mls_rs_uniffi_ "$RUNNER_TEMP/mls-symbols.txt"
+          grep -q init_callback_vtable_keypackagestorage "$RUNNER_TEMP/mls-symbols.txt"
+          if grep -E 'lib(crypto|ssl)\.' "$RUNNER_TEMP/mls-linked-libraries.txt"; then
+            echo 'OpenSSL dynamic-library dependency found' >&2
+            exit 1
+          fi
+          echo 'MLS bridge + P1 callback statically linked; no OpenSSL dylib dependency: PASS'
+      - name: Check plaintext logging
+        if: ${{ always() }}
+        run: |
+          python3 scripts/check-no-plaintext-logging.py --self-test
+          python3 scripts/check-no-plaintext-logging.py qualification/mls-m14/swift/Sources \
+            qualification/mls-m14/swift/Tests qualification/mls-m14/host/App

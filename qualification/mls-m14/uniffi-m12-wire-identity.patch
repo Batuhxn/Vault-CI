@@ -1,0 +1,60 @@
+diff --git a/mls-rs-uniffi/src/lib.rs b/mls-rs-uniffi/src/lib.rs
+index 65096b1..945293e 100644
+--- a/mls-rs-uniffi/src/lib.rs
++++ b/mls-rs-uniffi/src/lib.rs
+@@ -189,6 +189,21 @@ impl From<mls_rs::MlsMessage> for Message {
+     }
+ }
+ 
++// Downstream UniFFI exposure only: delegate transport encoding to mls-rs.
++#[uniffi::export]
++impl Message {
++    #[uniffi::constructor]
++    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
++        Ok(Self {
++            inner: mls_rs::MlsMessage::from_bytes(&bytes)?,
++        })
++    }
++
++    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
++        Ok(self.inner.to_bytes()?)
++    }
++}
++
+ #[derive(Clone, Debug, uniffi::Object)]
+ pub struct Proposal {
+     // FIXME: This isn't very useful because we get no details about the
+@@ -327,6 +342,33 @@ pub async fn generate_signature_keypair(
+     })
+ }
+ 
++/// Validate restored identity material with the configured upstream provider.
++#[cfg_attr(not(mls_build_async), maybe_async::must_be_sync)]
++#[cfg_attr(mls_build_async, maybe_async::must_be_async)]
++#[uniffi::export]
++pub async fn validate_signature_keypair(keypair: SignatureKeypair) -> Result<bool, Error> {
++    // The only exposed suite uses the provider's 64-byte Ed25519 secret
++    // representation and 32-byte public key. The provider's derivation
++    // accepts a 32-byte prefix, so reject truncated stored material first.
++    if keypair.secret_key.bytes.len() != 64 || keypair.public_key.bytes.len() != 32 {
++        return Ok(false);
++    }
++    let crypto_provider = OpensslCryptoProvider::default();
++    let suite = keypair.cipher_suite.into();
++    let provider = crypto_provider
++        .cipher_suite_provider(suite)
++        .ok_or(MlsError::UnsupportedCipherSuite(suite))?;
++    let secret = mls_rs::crypto::SignatureSecretKey::new(keypair.secret_key.bytes);
++    let derived = provider
++        .signature_key_derive_public(&secret)
++        .await
++        .map_err(|err| MlsError::CryptoProviderError(err.into_any_error()))?;
++    // The pinned provider emits seed || public for Ed25519. Verify the
++    // redundant public half too: its derivation accepts a seed-only prefix.
++    Ok(derived.as_bytes() == keypair.public_key.bytes.as_slice()
++        && &secret.as_bytes()[32..] == derived.as_bytes())
++}
++
+ /// An MLS client used to create key packages and manage groups.
+ ///
+ /// See [`mls_rs::Client`] for details.

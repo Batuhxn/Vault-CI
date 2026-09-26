@@ -14,9 +14,9 @@ private final class RecordingEnvelopeTransport: EnvelopeTransport {
 
 private final class FailingEnvelopeTransport: EnvelopeTransport {
     func post(_ conversation: Data, kind: String, base: UInt64?, data: Data, sender: String) throws -> RelayStatus {
-        throw RelayUnavailable()
+        throw RelayUnavailable.deliveryFailed
     }
-    func entry(_ conversation: Data, seq: UInt64) throws -> Envelope { throw RelayUnavailable() }
+    func entry(_ conversation: Data, seq: UInt64) throws -> Envelope { throw RelayUnavailable.deliveryFailed }
     func fetch(_ conversation: Data, recipient: String, after: UInt64) -> [Envelope] { [] }
 }
 

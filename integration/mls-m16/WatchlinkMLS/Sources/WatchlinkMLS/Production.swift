@@ -17,6 +17,11 @@ public protocol RelaySequencer: AnyObject {
 /// The qualified relay model; production uses it only as a test-controlled stub.
 extension Relay: RelaySequencer {}
 
+extension RelayUnavailable {
+    /// What a RelaySequencer throws when it cannot deliver (the qualified init is internal).
+    public static var deliveryFailed: RelayUnavailable { RelayUnavailable() }
+}
+
 public enum InstallState: Equatable, Sendable {
     /// No Keychain item and no state file: first pairing may create an identity.
     case absent

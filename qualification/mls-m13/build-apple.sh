@@ -20,14 +20,25 @@ cp "$build/bindings/mls_rs_uniffi.swift" "$root/swift/Sources/MLSBridge/"
 # Align Rust and vendored OpenSSL C objects to the package's iOS 17 floor.
 # Without this, Clang chooses the Xcode SDK version while rustc links for 10.0.
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
-for target in aarch64-apple-ios aarch64-apple-ios-sim; do
+for target in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
   cargo +1.98.1 build --release --locked -p mls-rs-uniffi --target "$target"
   library="target/$target/release/libmls_rs_uniffi.a"
   test -s "$library"
   file "$library"
   xcrun lipo -info "$library"
-  test "$(xcrun lipo -archs "$library")" = arm64
+  case "$target" in
+    x86_64-apple-ios) test "$(xcrun lipo -archs "$library")" = x86_64 ;;
+    *) test "$(xcrun lipo -archs "$library")" = arm64 ;;
+  esac
 done
+
+mkdir -p "$build/simulator"
+xcrun lipo -create \
+  target/aarch64-apple-ios-sim/release/libmls_rs_uniffi.a \
+  target/x86_64-apple-ios/release/libmls_rs_uniffi.a \
+  -output "$build/simulator/libmls_rs_uniffi.a"
+file "$build/simulator/libmls_rs_uniffi.a"
+xcrun lipo -info "$build/simulator/libmls_rs_uniffi.a"
 
 mkdir -p "$build/headers"
 cp "$build/bindings/mls_rs_uniffiFFI.h" "$build/headers/"
@@ -36,7 +47,7 @@ artifact="$root/swift/Artifacts/MLSBridgeFFI.xcframework"
 mkdir -p "$(dirname "$artifact")"
 xcodebuild -create-xcframework \
   -library target/aarch64-apple-ios/release/libmls_rs_uniffi.a -headers "$build/headers" \
-  -library target/aarch64-apple-ios-sim/release/libmls_rs_uniffi.a -headers "$build/headers" \
+  -library "$build/simulator/libmls_rs_uniffi.a" -headers "$build/headers" \
   -output "$artifact"
 python3 - "$artifact" <<'PY'
 import pathlib, plistlib, sys
@@ -45,7 +56,9 @@ with (artifact / 'Info.plist').open('rb') as source:
     slices = plistlib.load(source)['AvailableLibraries']
 assert len(slices) == 2
 assert {(s['SupportedPlatform'], s.get('SupportedPlatformVariant', '')) for s in slices} == {('ios', ''), ('ios', 'simulator')}
-assert all(s['SupportedArchitectures'] == ['arm64'] for s in slices)
+assert {(s['SupportedPlatform'], s.get('SupportedPlatformVariant', '')):
+        set(s['SupportedArchitectures']) for s in slices} == {
+    ('ios', ''): {'arm64'}, ('ios', 'simulator'): {'arm64', 'x86_64'}}
 for s in slices:
     archive = artifact / s['LibraryIdentifier'] / s['LibraryPath']
     assert archive.is_file()

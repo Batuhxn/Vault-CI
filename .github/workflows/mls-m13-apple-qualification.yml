@@ -28,7 +28,7 @@ jobs:
       - name: Install Rust and iOS targets
         run: |
           rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
-          rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - name: Build and inspect MLS bridge
         run: bash qualification/mls-m13/build-apple.sh
       - name: Build Swift XCTest target

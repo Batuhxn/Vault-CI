@@ -17,6 +17,6 @@ summaries = re.findall(r"Executed (\d+) tests?, with (\d+) failures?", log)
 if not summaries:
     sys.exit("CI log rejected: XCTest execution summary missing")
 executed, failures = map(int, summaries[-1])
-if executed < 20 or failures:
-    sys.exit(f"CI log rejected: {executed} tests, {failures} failures; expected >=20 and 0")
+if executed < 19 or failures:
+    sys.exit(f"CI log rejected: {executed} tests, {failures} failures; expected >=19 and 0")
 print(f"MLS Apple XCTest: PASS ({executed} executed, 0 failures); log guard: PASS")

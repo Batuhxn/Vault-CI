@@ -112,7 +112,7 @@ public final class Device {
         do {
             result = try operation()
         } catch {
-            if store.faults.crashed { throw error }  // process death: no cleanup runs
+            if let point = store.faults.crashedAt { throw SimulatedCrash(point: point) }  // no cleanup runs
             guard !(error is Closed), store.releasable() else {
                 store.abandon()  // keep the fail-closed marker
                 group = nil
@@ -127,7 +127,7 @@ public final class Device {
         do {
             try store.commit()
         } catch {
-            if store.faults.crashed { throw error }
+            if let point = store.faults.crashedAt { throw SimulatedCrash(point: point) }
             store.abandon()
             group = nil
             client = nil
@@ -355,7 +355,7 @@ public final class Device {
             do {
                 result = try group.processIncomingMessage(message: message)
             } catch {
-                if store.callbackFailed || store.faults.crashed { throw error }
+                if store.callbackFailed || store.faults.crashedAt != nil { throw error }
                 throw Violation(security: .halted, reason: "accepted commit failed MLS processing")
             }
             guard case .commit = result, group.currentEpoch() == base + 1 else {

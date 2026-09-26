@@ -59,11 +59,13 @@ public final class Faults: @unchecked Sendable {
     public var crashAt: String?
     /// Simulated storage failure at a callback point.
     public var failAt: String?
-    public private(set) var crashed = false
+    /// Set once the simulated process death happened; it survives the error
+    /// being wrapped by Rust when it is thrown from inside a callback.
+    public private(set) var crashedAt: String?
 
     func hit(_ point: String) throws {
         if crashAt == point {
-            crashed = true
+            crashedAt = point
             throw SimulatedCrash(point: point)
         }
         if failAt == point { throw Closed(reason: "injected storage failure at \(point)") }

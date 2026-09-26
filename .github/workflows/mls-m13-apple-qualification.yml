@@ -1,0 +1,35 @@
+name: MLS M1.3 Apple qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apple:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Checkout qualification branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Select Xcode 26.3
+        run: |
+          test -d /Applications/Xcode_26.3.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+          xcodebuild -version
+      - name: Install Rust and iOS targets
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Build and inspect MLS bridge
+        run: bash qualification/mls-m13/build-apple.sh
+      - name: Build Swift XCTest target
+        run: |
+          cd qualification/mls-m13/swift
+          xcodebuild build-for-testing -scheme MLSAppleQualification-Package \
+            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO

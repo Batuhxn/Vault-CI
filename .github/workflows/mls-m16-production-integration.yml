@@ -1,0 +1,119 @@
+name: MLS M1.6 production CryptoEngine integration
+
+# Unsigned only: no signing, no Apple credentials, no upload, no relay.
+on:
+  push:
+    branches:
+      - integration/mls-m16-production-20260927
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  m16:
+    runs-on: macos-26
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: integration/mls-m16
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Pinned relationship to the qualified MLS core
+        run: python3 WatchlinkMLS/check-qualified-core.py qualified/m15/swift/Sources qualified/m14-tests
+      - name: Plaintext logging guard
+        run: |
+          python3 scripts/check-no-plaintext-logging.py --self-test
+          python3 scripts/check-no-plaintext-logging.py Sources/Vault WatchlinkMLS/Sources \
+            WatchlinkMLS/Tests Tests
+      - name: Select Xcode 26.3
+        run: |
+          test -d /Applications/Xcode_26.3.app
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+          xcodebuild -version
+      - name: Install Rust and iOS targets
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Build the MLS bridge with the unchanged M1.5 recipe
+        run: bash WatchlinkMLS/build-bridge.sh "$PWD/qualified/m15"
+      - name: Generate the production project
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen --version
+          xcodegen generate --spec project.yml
+      - name: Run production + qualified-suite XCTest on the iOS Simulator
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun simctl list runtimes available -j > "$RUNNER_TEMP/runtimes.json"
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          read -r runtime_id runtime_version udid device_type < <(
+            python3 qualified/m15/pick-simulator.py "$sdk" "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
+          if [ "$udid" = '-' ]; then
+            udid="$(xcrun simctl create Watchlink-M16-CI "$device_type" "$runtime_id")"
+          fi
+          echo "Using iOS Simulator $runtime_version"
+          for suite in Vault-AppTests:48 WatchlinkMLS-QualifiedTests:19; do
+            target="${suite%%:*}" expected="${suite##*:}"
+            log="$RUNNER_TEMP/$target.log"
+            set +e
+            xcodebuild test -project Vault.xcodeproj -scheme Vault-App -only-testing:"$target" \
+              -destination "platform=iOS Simulator,id=$udid" \
+              -derivedDataPath "$RUNNER_TEMP/M16TestDerivedData" CODE_SIGNING_ALLOWED=NO \
+              2>&1 | tee "$log"
+            status="${PIPESTATUS[0]}"
+            set -e
+            python3 qualified/m15/check-xctest-log.py "$log"
+            test "$status" -eq 0
+            summary="$(grep -E 'Executed [0-9]+ tests?, with [0-9]+ failures?' "$log" | tail -n 1)"
+            echo "$target: $summary"
+            printf '%s' "$summary" | grep -Eq "Executed $expected tests?, with 0 failures" \
+              || { echo "::error::$target expected exactly $expected tests with 0 failures"; exit 1; }
+            if grep -q '\[relay\]' "$log"; then echo "::error::a real RelayClient was active"; exit 1; fi
+          done
+      - name: Debug simulator build of Vault-App
+        run: |
+          xcodebuild build -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/M16DebugDerivedData" CODE_SIGNING_ALLOWED=NO
+          # Positive control for the Release gate below: the Debug-only demo IS present here.
+          # (Debug code may live in Vault-App.debug.dylib, so search the whole bundle.)
+          grep -rqa 11RelayClientC "$RUNNER_TEMP/M16DebugDerivedData/Build/Products/Debug-iphonesimulator/Vault-App.app"
+      - name: Release device build and binary gates
+        run: |
+          set -euo pipefail
+          xcodebuild build -project Vault.xcodeproj -scheme Vault-App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/M16ReleaseDerivedData" CODE_SIGNING_ALLOWED=NO
+          app="$RUNNER_TEMP/M16ReleaseDerivedData/Build/Products/Release-iphoneos/Vault-App.app"
+          binary="$app/Vault-App"
+          test -f "$binary"
+          test ! -e "$app/PlugIns" || { echo "::error::test bundle leaked into the app"; exit 1; }
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = com.batuhxn.watchlink
+          lipo -archs "$binary" | grep -qw arm64
+          xcrun otool -L "$binary" | tee "$RUNNER_TEMP/m16-linked.txt"
+          if grep -E 'lib(crypto|ssl)\.' "$RUNNER_TEMP/m16-linked.txt"; then
+            echo '::error::OpenSSL dynamic-library dependency found'; exit 1
+          fi
+          xcrun nm -gU "$binary" > "$RUNNER_TEMP/m16-symbols.txt"
+          grep -q _uniffi_mls_rs_uniffi_ "$RUNNER_TEMP/m16-symbols.txt" \
+            || { echo '::error::MLS bridge not linked'; exit 1; }
+          grep -q init_callback_vtable_keypackagestorage "$RUNNER_TEMP/m16-symbols.txt" \
+            || { echo '::error::P1 KeyPackage callback not linked'; exit 1; }
+          strings -a "$binary" > "$RUNNER_TEMP/m16-strings.txt"
+          grep -q MLSCryptoEngine "$RUNNER_TEMP/m16-strings.txt" \
+            || { echo '::error::production engine missing'; exit 1; }
+          # Mangled type names of the Debug-only legacy plaintext demo, and its log tag.
+          for legacy in 11RelayClientC 9ChatStoreC 18RelayConfigurationV 17RelayFrameDecoderV \
+                        13MessageBubbleV 11ChatMessageV '\[relay\]' '192\.168\.'; do
+            if grep -q "$legacy" "$RUNNER_TEMP/m16-strings.txt" "$RUNNER_TEMP/m16-symbols.txt"; then
+              echo "::error::legacy plaintext path '$legacy' present in Release"; exit 1
+            fi
+          done
+          echo 'Release: MLS bridge + P1 linked statically, no OpenSSL dylib, no legacy plaintext route: PASS'

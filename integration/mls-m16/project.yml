@@ -1,0 +1,137 @@
+# Production iOS app. Generate Vault.xcodeproj with XcodeGen on macOS.
+# The bundle ID is a default; override PRODUCT_BUNDLE_IDENTIFIER at build time
+# if the Apple Developer team registers a different identifier.
+name: Vault
+
+configs:
+  Debug: debug
+  Release: release
+
+options:
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+packages:
+  # Production MLS engine core. Build the bridge first: WatchlinkMLS/build-bridge.sh.
+  WatchlinkMLS:
+    path: WatchlinkMLS
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  Vault-App:
+    type: application
+    platform: iOS
+    attributes:
+      ProvisioningStyle: Automatic
+    sources:
+      - path: Sources/Vault
+    dependencies:
+      - package: WatchlinkMLS
+        product: WatchlinkMLS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink
+        PRODUCT_NAME: Vault-App
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_CFBundleDisplayName: Watchlink
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Watchlink connects directly to your paired computer on the local network to relay messages."
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+  # Empty app that only gives hosted tests a simulator Keychain identity.
+  # Built for testing only; it never contains production code.
+  Watchlink-TestHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: Tests/TestHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.testhost
+        GENERATE_INFOPLIST_FILE: "YES"
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+
+  # Unit + engine integration tests for the production app (never spike code).
+  # The bundle compiles the production sources itself, minus the `@main`
+  # entry point, and is hosted by Watchlink-TestHost (not Vault-App), so
+  # running tests never launches Vault-App and never opens a socket.
+  Vault-AppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Sources/Vault
+        excludes:
+          - VaultApp.swift
+      - path: Tests/Vault-AppTests
+    dependencies:
+      - target: Watchlink-TestHost
+      - package: WatchlinkMLS
+        product: WatchlinkMLS
+      - package: WatchlinkMLS
+        product: MLSBridge
+      - package: WatchlinkMLS
+        product: ProtectedStateStore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Watchlink-TestHost.app/Watchlink-TestHost"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+  # The M1.4 lifecycle + peer-trust suites, rerun against the production
+  # WatchlinkMLS module (QUALIFIED_CORE.diff pins the adaptations).
+  WatchlinkMLS-QualifiedTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: WatchlinkMLS/Tests/QualifiedSuite
+    dependencies:
+      - target: Watchlink-TestHost
+      - package: WatchlinkMLS
+        product: WatchlinkMLS
+      - package: WatchlinkMLS
+        product: MLSBridge
+      - package: WatchlinkMLS
+        product: ProtectedStateStore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.qualifiedtests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_VERSION: "6.0"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Watchlink-TestHost.app/Watchlink-TestHost"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  Vault-App:
+    build:
+      targets:
+        Vault-App: all
+        # Built for testing only: never part of build/run/archive, so the
+        # test bundles and host cannot end up inside a shipped IPA.
+        Watchlink-TestHost: [test]
+        Vault-AppTests: [test]
+        WatchlinkMLS-QualifiedTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - Vault-AppTests
+        - WatchlinkMLS-QualifiedTests
+    archive:
+      config: Release

@@ -338,7 +338,7 @@ final class MLSEngineIntegrationTests: XCTestCase {
         let (sa, sb) = (slot(), slot())
         let a = engine(sa, relay), b = engine(sb, relay)
         XCTAssertNil(try a.acceptPairingCode(XCTUnwrap(b.acceptPairingCode(a.startPairing().code)).code))
-        let pinned = a.device!.document.peerPin
+        let pinned = try XCTUnwrap(a.device).document.peerPin
         let entry = try XCTUnwrap(all(relay, a).first { $0.kind == "keypackage" })
         let impostor = try Client(id: Data(b.device!.name.utf8),  // same BasicCredential, other key
                                   signatureKeypair: generateSignatureKeypair(cipherSuite: .curve25519Aes128),

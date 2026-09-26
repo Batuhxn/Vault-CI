@@ -64,6 +64,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.testhost
         GENERATE_INFOPLIST_FILE: "YES"
+        # Ad-hoc simulator signature: without one the simulator denies Keychain access.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
 
   # Unit + engine integration tests for the production app (never spike code).

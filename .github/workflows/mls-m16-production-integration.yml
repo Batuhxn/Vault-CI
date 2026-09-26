@@ -65,7 +65,7 @@ jobs:
             set +e
             xcodebuild test -project Vault.xcodeproj -scheme Vault-App -only-testing:"$target" \
               -destination "platform=iOS Simulator,id=$udid" \
-              -derivedDataPath "$RUNNER_TEMP/M16TestDerivedData" CODE_SIGNING_ALLOWED=NO \
+              -derivedDataPath "$RUNNER_TEMP/M16TestDerivedData" \
               2>&1 | tee "$log"
             status="${PIPESTATUS[0]}"
             set -e

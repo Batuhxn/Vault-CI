@@ -4,7 +4,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
 build="${RUNNER_TEMP:?}/mls-m13"
 mkdir -p "$build"
-"$root/prepare-upstream.sh" "$build/mls-rs"
+bash "$root/prepare-upstream.sh" "$build/mls-rs"
 cd "$build/mls-rs"
 cargo +1.98.1 fmt --all -- --check
 cargo +1.98.1 test --locked -p mls-rs-uniffi --lib

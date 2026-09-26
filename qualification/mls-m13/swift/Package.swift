@@ -12,6 +12,5 @@ let package = Package(
         .binaryTarget(name: "mls_rs_uniffiFFI", path: "Artifacts/MLSBridgeFFI.xcframework"),
         .target(name: "MLSBridge", dependencies: ["mls_rs_uniffiFFI"]),
         .target(name: "ProtectedStateStore"),
-        .testTarget(name: "MLSQualificationTests", dependencies: ["MLSBridge", "ProtectedStateStore"]),
     ]
 )

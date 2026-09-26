@@ -24,6 +24,7 @@ private final class MemoryAnchorStore: StateAnchorStore {
 }
 
 final class ProtectedStateStoreTests: XCTestCase {
+    private enum SimulatedCrash: Error { case exit }
     private func temporaryFile() throws -> URL {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchlink-m12-\(UUID().uuidString)", isDirectory: true)
@@ -105,5 +106,44 @@ final class ProtectedStateStoreTests: XCTestCase {
             attributes[kSecAttrAccessible as String] as? String,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
         )
+
+        // Deleting the trusted key does not silently create a replacement.
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess)
+        XCTAssertThrowsError(try ProtectedStateStore(anchorStore: anchor, fileURL: file).restore())
+    }
+
+    func testTruncatedStateAndVersionMismatch() throws {
+        let anchor = MemoryAnchorStore()
+        let file = try temporaryFile()
+        let store = ProtectedStateStore(anchorStore: anchor, fileURL: file)
+        try store.create()
+        try store.commit(opaqueMLSState: Data([4, 5, 6]), version: store.reserve())
+        let original = try Data(contentsOf: file)
+        try Data(original.prefix(8)).write(to: file, options: [.atomic, .completeFileProtection])
+        XCTAssertThrowsError(try store.restore())
+
+        var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+        envelope["stateVersion"] = 999
+        try JSONSerialization.data(withJSONObject: envelope)
+            .write(to: file, options: [.atomic, .completeFileProtection])
+        XCTAssertThrowsError(try store.restore())
+    }
+
+    func testSimulatedCrashOrderingFailsClosedUntilAnchorCommit() throws {
+        for point in [CommitPoint.beforeFileWrite, .afterFileWrite, .afterAnchorCommit] {
+            let anchor = MemoryAnchorStore()
+            let file = try temporaryFile()
+            let store = ProtectedStateStore(anchorStore: anchor, fileURL: file,
+                                            fault: { at in if at == point { throw SimulatedCrash.exit } })
+            try store.create()
+            let version = try store.reserve()
+            XCTAssertThrowsError(try store.commit(opaqueMLSState: Data([7, 8, 9]), version: version))
+            let restarted = ProtectedStateStore(anchorStore: anchor, fileURL: file)
+            if point == .afterAnchorCommit {
+                XCTAssertEqual(try restarted.restore(), Data([7, 8, 9]))
+            } else {
+                XCTAssertThrowsError(try restarted.restore())
+            }
+        }
     }
 }

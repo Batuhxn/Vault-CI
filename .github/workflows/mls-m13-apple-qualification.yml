@@ -35,4 +35,44 @@ jobs:
         run: |
           cd qualification/mls-m13/swift
           xcodebuild build-for-testing -scheme MLSAppleQualification-Package \
-            -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/MLSDerivedData" CODE_SIGNING_ALLOWED=NO
+      - name: Run Swift MLS and protected storage XCTest
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun simctl list runtimes available -j > "$RUNNER_TEMP/runtimes.json"
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          read -r runtime_id runtime_version udid device_type < <(
+            python3 qualification/mls-m13/pick-simulator.py "$sdk" \
+              "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
+          if [ "$udid" = '-' ]; then
+            udid="$(xcrun simctl create MLS-M13-CI "$device_type" "$runtime_id")"
+          fi
+          echo "Using iOS Simulator $runtime_version"
+          cd qualification/mls-m13/swift
+          set +e
+          xcodebuild test -scheme MLSAppleQualification-Package \
+            -destination "platform=iOS Simulator,id=$udid" \
+            -derivedDataPath "$RUNNER_TEMP/MLSDerivedData" CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee "$RUNNER_TEMP/mls-m13-xctest.log"
+          test_status="${PIPESTATUS[0]}"
+          set -e
+          python3 ../check-xctest-log.py "$RUNNER_TEMP/mls-m13-xctest.log"
+          test "$test_status" -eq 0
+      - name: Inspect linked XCTest binary
+        run: |
+          binary="$(find "$RUNNER_TEMP/MLSDerivedData/Build/Products" \
+            -path '*/MLSQualificationTests.xctest/MLSQualificationTests' -type f -print -quit)"
+          test -n "$binary"
+          file "$binary"
+          xcrun otool -L "$binary" | tee "$RUNNER_TEMP/mls-linked-libraries.txt"
+          if grep -E 'lib(crypto|ssl)\.' "$RUNNER_TEMP/mls-linked-libraries.txt"; then
+            echo 'OpenSSL dynamic-library dependency found' >&2
+            exit 1
+          fi
+      - name: Check plaintext logging
+        if: ${{ always() }}
+        run: |
+          python3 scripts/check-no-plaintext-logging.py --self-test
+          python3 scripts/check-no-plaintext-logging.py qualification/mls-m13/swift/Sources qualification/mls-m13/swift/Tests

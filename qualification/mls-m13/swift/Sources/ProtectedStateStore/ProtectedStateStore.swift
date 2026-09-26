@@ -13,6 +13,13 @@ public enum ProtectedStateError: Error {
     case keychain(OSStatus)
 }
 
+/// Test fault points model a process exit without changing the protected data.
+public enum CommitPoint: Equatable {
+    case beforeFileWrite
+    case afterFileWrite
+    case afterAnchorCommit
+}
+
 public struct StateAnchor: Codable {
     public var storageKey: Data
     public var committedVersion: UInt64
@@ -96,10 +103,13 @@ public final class ProtectedStateStore {
     private let anchorStore: any StateAnchorStore
     private let fileURL: URL
     private let formatVersion: UInt8 = 1
+    private let fault: ((CommitPoint) throws -> Void)?
 
-    public init(anchorStore: any StateAnchorStore, fileURL: URL) {
+    public init(anchorStore: any StateAnchorStore, fileURL: URL,
+                fault: ((CommitPoint) throws -> Void)? = nil) {
         self.anchorStore = anchorStore
         self.fileURL = fileURL
+        self.fault = fault
     }
 
     /// Explicit first-pairing operation. Restore never calls this.
@@ -132,13 +142,16 @@ public final class ProtectedStateStore {
         guard let combined = sealed.combined else { throw ProtectedStateError.malformedEnvelope }
         let envelope = StateEnvelope(formatVersion: formatVersion, stateVersion: version, combined: combined)
         let encoded = try JSONEncoder().encode(envelope)
+        try fault?(.beforeFileWrite)
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
         try encoded.write(to: fileURL, options: [.atomic, .completeFileProtection])
+        try fault?(.afterFileWrite)
         anchor.committedVersion = version
         anchor.pendingVersion = nil
         try anchorStore.replace(anchor)
+        try fault?(.afterAnchorCommit)
     }
 
     public func restore() throws -> Data {

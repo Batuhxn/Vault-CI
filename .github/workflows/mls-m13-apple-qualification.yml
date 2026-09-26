@@ -1,6 +1,9 @@
 name: MLS M1.3 Apple qualification
 
 on:
+  push:
+    branches:
+      - qualification/mls-m13-apple-20260926
   workflow_dispatch:
 
 permissions:

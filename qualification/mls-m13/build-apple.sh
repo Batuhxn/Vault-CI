@@ -17,6 +17,9 @@ cargo +1.98.1 run --release --locked -p uniffi-bindgen -- generate \
   --out-dir "$build/bindings" --no-format
 cp "$build/bindings/mls_rs_uniffi.swift" "$root/swift/Sources/MLSBridge/"
 
+# Align Rust and vendored OpenSSL C objects to the package's iOS 17 floor.
+# Without this, Clang chooses the Xcode SDK version while rustc links for 10.0.
+export IPHONEOS_DEPLOYMENT_TARGET=17.0
 for target in aarch64-apple-ios aarch64-apple-ios-sim; do
   cargo +1.98.1 build --release --locked -p mls-rs-uniffi --target "$target"
   library="target/$target/release/libmls_rs_uniffi.a"

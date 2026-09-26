@@ -1,0 +1,63 @@
+# Isolated M1.5 real-device qualification app. Not part of the Watchlink
+# runtime. Release signing values are injected from CI environment variables
+# at generate time only; this file holds no team, profile or identity.
+name: M15Qualification
+options:
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  MLSAppleQualification:
+    path: ../swift
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  M15QualificationApp:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: MLSAppleQualification
+        product: M15Qualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.m15qual
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: M15 Qualification
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "1.5"
+        CURRENT_PROJECT_VERSION: "${M15_BUILD_NUMBER}"
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "${M15_SIGN_IDENTITY}"
+          DEVELOPMENT_TEAM: "${M15_TEAM_ID}"
+          PROVISIONING_PROFILE_SPECIFIER: "${M15_PROFILE_NAME}"
+          OTHER_CODE_SIGN_FLAGS: "${M15_SIGN_FLAGS}"
+  M15ScenarioTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [../swift/Tests/M15QualificationTests]
+    dependencies:
+      - target: M15QualificationApp
+      - package: MLSAppleQualification
+        product: M15Qualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.m15qual.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/M15QualificationApp.app/M15QualificationApp"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  M15QualificationApp:
+    build:
+      targets:
+        M15QualificationApp: all
+        M15ScenarioTests: [test]
+    test:
+      targets: [M15ScenarioTests]
+    archive:
+      config: Release

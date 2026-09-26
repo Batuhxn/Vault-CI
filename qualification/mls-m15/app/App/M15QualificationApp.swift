@@ -65,8 +65,9 @@ struct QualificationView: View {
                     Button("Lock During Operation: Verify") { lab.lockDuringOperationVerify() }
                 }
                 Section("Force-kill / reboot") {
-                    Button("Relaunch Test") { lab.restoreTest(reboot: false) }
-                    Button("Reboot Test") { lab.restoreTest(reboot: true) }
+                    Button("Relaunch Test") { lab.relaunchTest() }
+                    Button("Reboot Test: Prepare") { lab.rebootPrepare() }
+                    Button("Reboot Test: Verify (after reboot + first unlock)") { lab.rebootVerify() }
                     Button("Pending Commit Test") { lab.pendingCommitStart() }
                     Button("Pending Commit: Finish") { lab.pendingCommitFinish() }
                     Button("KeyPackage Test") { lab.keyPackageStart() }

@@ -75,20 +75,27 @@ required block below has real-device results.**
 | C: KeyPackage | **KeyPackage Test** | yes | **KeyPackage: Finish** | KeyPackage survived; Welcome joins once; second join rejected |
 | D: hard stop | **Hard Stop Test** | yes | **Hard Stop: Finish** | `identityChanged` persists; operations blocked; no re-pin |
 
-## Block 4: reboot + first unlock
+## Block 4: reboot + first unlock (two explicit steps)
 
-1. Tap **Relaunch Test** once, so the checkpoint is current.
+1. Tap **Reboot Test: Prepare**. It records only the boot identity, the
+   fingerprints, the conversation, and the stateVersion, and marks the reboot
+   test pending. It shows `REBOOT_PENDING` and claims **nothing**.
 2. Optionally tap **KeyPackage Test** too (outstanding KeyPackage across the
    reboot).
 3. Power off and power on the phone. **Do not unlock yet.** Before the first
    unlock, iOS does not run the app, so the app cannot observe this window.
    It is covered by Block 1 (class A / WhenUnlocked unavailable while locked).
-4. Unlock for the first time, open the app, and tap **Reboot Test**. If you
-   did step 2, also tap **KeyPackage: Finish**.
+4. Unlock for the first time, open the app, and tap **Reboot Test: Verify**.
+   If you did step 2, also tap **KeyPackage: Finish**.
 5. Expected results:
-   - "device reboot observed (kern.boottime changed)".
-   - The same fingerprints, conversation, and stateVersion.
-   - Messaging restores, with no regeneration.
+   - `REBOOT_OBSERVED`, then PASS for the same identity, the same
+     conversation, the expected stateVersion, and restored messaging.
+   - A reboot counts only if the current boot started after Prepare
+     (`kern.boottime` later than the Prepare moment) and the boot session
+     changed, where iOS reports one.
+   - Without a real reboot, the result is `REBOOT_NOT_OBSERVED` with no PASS,
+     and the test stays pending. Relaunch-only restores are Block 3A
+     evidence, not reboot evidence.
 
 ## Block 5: wipe / re-pair
 

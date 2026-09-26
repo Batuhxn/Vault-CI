@@ -40,7 +40,7 @@ final class ScenarioTests: XCTestCase {
         assertNoFailure(session)
 
         session = lab()  // force-kill + relaunch
-        session.restoreTest(reboot: false)
+        session.relaunchTest()
         session.pendingCommitStart()
         session = lab()
         session.pendingCommitFinish()
@@ -80,6 +80,81 @@ final class ScenarioTests: XCTestCase {
         reinstalled.reinstallCheck()
         XCTAssertEqual(reinstalled.results.last?.test, "Reinstall Check")
         XCTAssertEqual(reinstalled.results.last?.status, "PASS")
+    }
+
+    // MARK: Reboot Test regression (a false "reboot observed" must be impossible)
+
+    private func preparedLab(boot: BootSnapshot) -> QualificationLab {
+        let session = lab()
+        session.bootSource = { boot }
+        session.runSetup(osVersion: "simulator", protectedDataAvailable: true)
+        session.createProtectedState()
+        session.rebootPrepare()
+        return session
+    }
+
+    private let sameBoot = BootSnapshot(bootTime: 1_789_990_921, bootSession: "A1B2C3D4-SAME", wallClock: 1_790_000_000)
+
+    func testPrepareThenVerifyWithoutRebootIsNotObserved() async throws {
+        let session = preparedLab(boot: sameBoot)
+        XCTAssertTrue(session.results.contains { $0.detail.hasPrefix("REBOOT_PENDING") })
+        XCTAssertFalse(session.results.contains { $0.test.hasPrefix("Reboot Test") && $0.status == "PASS" },
+                       "prepare must not claim a reboot")
+        session.bootSource = { BootSnapshot(bootTime: 1_789_990_921, bootSession: "A1B2C3D4-SAME", wallClock: 1_790_000_090) }
+        session.rebootVerify()
+        let last = try XCTUnwrap(session.results.last)
+        XCTAssertEqual(last.status, "NOT_OBSERVED")
+        XCTAssertTrue(last.detail.hasPrefix("REBOOT_NOT_OBSERVED"))
+        XCTAssertNotNil(try session.baseline().rebootPending, "still pending")
+    }
+
+    func testRepeatedVerifyWithoutRebootNeverPasses() async throws {
+        let session = preparedLab(boot: sameBoot)
+        for drift: Int64 in [0, 1, -2, 3] {  // small wall-clock adjustments of kern.boottime
+            session.bootSource = { BootSnapshot(bootTime: 1_789_990_921 + drift, bootSession: "A1B2C3D4-SAME",
+                                                wallClock: 1_790_000_100) }
+            session.rebootVerify()
+            XCTAssertEqual(session.results.last?.status, "NOT_OBSERVED")
+        }
+        XCTAssertFalse(session.results.contains { $0.test == "Reboot Test: Verify" && $0.status == "PASS" })
+    }
+
+    func testSimulatedRebootIsDetectedAndClearsPending() async throws {
+        let session = preparedLab(boot: sameBoot)
+        session.bootSource = { BootSnapshot(bootTime: 1_790_000_300, bootSession: "E5F6-NEW", wallClock: 1_790_000_400) }
+        let before = session.results.count
+        session.rebootVerify()
+        let verify = session.results.dropFirst(before)
+        XCTAssertTrue(verify.first?.detail.hasPrefix("REBOOT_OBSERVED") == true)
+        XCTAssertEqual(verify.filter { $0.status == "PASS" }.count, 5, "reboot + identity + conversation + version + messaging")
+        XCTAssertFalse(verify.contains { $0.status == "FAIL" })
+        XCTAssertNil(try session.baseline().rebootPending, "cleared only after successful verification")
+    }
+
+    func testRebootEvidenceRules() {
+        let prepared = sameBoot
+        let unchanged = BootSnapshot(bootTime: prepared.bootTime, bootSession: prepared.bootSession, wallClock: prepared.wallClock + 60)
+        XCTAssertFalse(BootSnapshot.rebootObserved(prepared: prepared, now: unchanged))
+        let clockAdjusted = BootSnapshot(bootTime: prepared.bootTime + 4, bootSession: prepared.bootSession, wallClock: prepared.wallClock + 60)
+        XCTAssertFalse(BootSnapshot.rebootObserved(prepared: prepared, now: clockAdjusted))
+        let sameSessionLaterBoot = BootSnapshot(bootTime: prepared.wallClock + 30, bootSession: prepared.bootSession, wallClock: prepared.wallClock + 90)
+        XCTAssertFalse(BootSnapshot.rebootObserved(prepared: prepared, now: sameSessionLaterBoot), "session must change when reported")
+        let rebooted = BootSnapshot(bootTime: prepared.wallClock + 30, bootSession: "NEW", wallClock: prepared.wallClock + 90)
+        XCTAssertTrue(BootSnapshot.rebootObserved(prepared: prepared, now: rebooted))
+        let noSession = BootSnapshot(bootTime: prepared.wallClock + 30, bootSession: nil, wallClock: prepared.wallClock + 90)
+        XCTAssertTrue(BootSnapshot.rebootObserved(prepared: BootSnapshot(bootTime: 1, bootSession: nil, wallClock: prepared.wallClock), now: noSession))
+    }
+
+    func testBaselineRoundTripPreservesExactBootValues() throws {
+        let snapshot = BootSnapshot(bootTime: 1_789_990_921, bootSession: "0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0",
+                                    wallClock: Int64.max - 1)
+        let baseline = Baseline(conversation: Data(repeating: 7, count: 16), alicePin: Data(repeating: 1, count: 32),
+                                bobPin: Data(repeating: 2, count: 32), aliceVersion: UInt64.max, bobVersion: 9,
+                                bootTime: Int64.min + 1, ownNonce: nil, pendingCommitHash: nil, rebootPending: snapshot)
+        let decoded = try JSONDecoder().decode(Baseline.self, from: JSONEncoder().encode(baseline))
+        XCTAssertEqual(decoded.rebootPending, snapshot)
+        XCTAssertEqual(decoded.bootTime, Int64.min + 1)
+        XCTAssertEqual(decoded.aliceVersion, UInt64.max)
     }
 
     func testReportCarriesNoSecretsOrPlaintext() async throws {

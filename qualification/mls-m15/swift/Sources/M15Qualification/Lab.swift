@@ -29,6 +29,31 @@ struct Baseline: Codable {
     var bootTime: Int64
     var ownNonce: Data?
     var pendingCommitHash: Data?
+    /// Set by Reboot Test: Prepare; cleared only by a successful Reboot Test: Verify.
+    var rebootPending: BootSnapshot?
+}
+
+/// Non-secret boot identity used to prove a reboot happened between two moments.
+struct BootSnapshot: Codable, Equatable {
+    var bootTime: Int64        // kern.boottime tv_sec
+    var bootSession: String?   // kern.bootsessionuuid, when the OS exposes it
+    var wallClock: Int64       // when the snapshot was taken
+
+    static func current() -> BootSnapshot {
+        BootSnapshot(bootTime: M15Qualification.bootTime(), bootSession: bootSessionUUID(),
+                     wallClock: Int64(Date().timeIntervalSince1970))
+    }
+
+    /// A reboot happened after `prepared` only if the current boot STARTED after
+    /// the prepare moment (a few seconds of wall-clock adjustment cannot fake
+    /// that), and the boot session changed whenever the OS reports one.
+    static func rebootObserved(prepared: BootSnapshot, now: BootSnapshot) -> Bool {
+        let bootedAfterPrepare = now.bootTime > prepared.wallClock + 5
+        if let before = prepared.bootSession, let after = now.bootSession {
+            return bootedAfterPrepare && before != after
+        }
+        return bootedAfterPrepare
+    }
 }
 
 /// Synthetic plaintext markers; the leak scan searches every app file for them.
@@ -43,6 +68,8 @@ public final class QualificationLab {
     let prefix: String
     private var relay: Relay?
     private var events: [String] = []
+    /// Injectable for regression tests only; the app always reads the kernel.
+    var bootSource: () -> BootSnapshot = BootSnapshot.current
     private var lockSnapshot: (Data, Data, UInt64, UInt64)?
 
     public init(root: URL, servicePrefix: String) {
@@ -182,7 +209,7 @@ public final class QualificationLab {
             marker[kSecValueData as String] = Data(run.utf8)
             let status = SecItemAdd(marker as CFDictionary, nil)
             record("Run Setup", status == errSecSuccess ? "PASS" : "FAIL",
-                   "new synthetic run \(run.prefix(8)); iOS \(osVersion); bootTime \(bootTime()); " +
+                   "new synthetic run \(run.prefix(8)); iOS \(osVersion); bootTime \(bootSource().bootTime); " +
                    "protectedDataAvailable=\(protectedDataAvailable)", osStatus: status)
         }
     }
@@ -201,7 +228,7 @@ public final class QualificationLab {
                   "mutual QR pairing, established, messaging both ways; conversation \(hex(a.document.conversation!)); " +
                   "alice \(fingerprint(a.ownPin)); bob \(fingerprint(b.ownPin))", version: version(a))
             try save(Baseline(conversation: a.document.conversation!, alicePin: a.ownPin, bobPin: b.ownPin,
-                              aliceVersion: version(a) ?? 0, bobVersion: version(b) ?? 0, bootTime: bootTime(),
+                              aliceVersion: version(a) ?? 0, bobVersion: version(b) ?? 0, bootTime: bootSource().bootTime,
                               ownNonce: a.document.ownNonce))
             let complete = WhenUnlockedThisDeviceOnly()
             for device in [a, b] {
@@ -217,34 +244,84 @@ public final class QualificationLab {
 
     // MARK: Relaunch / Reboot
 
-    public func restoreTest(reboot: Bool) {
-        let test = reboot ? "Reboot Test" : "Relaunch Test"
-        guard let run = requireRun(test) else { return }
-        guarded(test) {
+    public func relaunchTest() {
+        guard let run = requireRun("Relaunch Test") else { return }
+        guarded("Relaunch Test") {
+            let base = try baseline()
+            record("Relaunch Test", "INFO", "kern.boottime=\(bootSource().bootTime); checkpoint bootTime=\(base.bootTime)")
+            try verifyRestore("Relaunch Test", run: run, base: base, after: "force-kill")
+        }
+    }
+
+    public func rebootPrepare() {
+        guard let run = requireRun("Reboot Test: Prepare") else { return }
+        guarded("Reboot Test: Prepare") {
             var base = try baseline()
-            let booted = bootTime()
-            if reboot {
-                check(test, booted != base.bootTime, "device reboot observed (kern.boottime changed)")
-            } else {
-                record(test, "INFO", booted == base.bootTime ? "same boot session" : "a reboot happened since setup")
-            }
             let a = try open(run, "main", "alice")
             let b = try open(run, "main", "bob")
-            check(test, a.ownPin == base.alicePin && b.ownPin == base.bobPin,
-                  "same identity fingerprints alice \(fingerprint(a.ownPin)) bob \(fingerprint(b.ownPin)); no regeneration")
-            check(test, a.document.conversation == base.conversation && a.document.lifecycle == .established
-                  && b.document.lifecycle == .established && a.document.security == .ok,
-                  "same conversation \(hex(base.conversation)); established; security ok")
-            let versionsOK = version(a) == base.aliceVersion && version(b) == base.bobVersion
-            check(test, versionsOK, "stateVersion unchanged since last checkpoint", version: version(a))
-            try a.send(Data(plaintextMarkers[0].utf8))
-            let got = try b.sync()
-            check(test, got == [Data(plaintextMarkers[0].utf8)], "messaging state restores after \(reboot ? "reboot + first unlock" : "force-kill")")
-            base.aliceVersion = version(a) ?? 0
-            base.bobVersion = version(b) ?? 0
-            base.bootTime = booted
+            guard a.ownPin == base.alicePin, b.ownPin == base.bobPin, a.document.conversation == base.conversation,
+                  let aliceVersion = version(a), let bobVersion = version(b) else {
+                return record("Reboot Test: Prepare", "FAIL", "current state does not match the checkpoint; run Create Protected State")
+            }
+            let snapshot = bootSource()
+            base.aliceVersion = aliceVersion
+            base.bobVersion = bobVersion
+            base.bootTime = snapshot.bootTime
+            base.rebootPending = snapshot
             try save(base)
+            record("Reboot Test: Prepare", "INFO",
+                   "REBOOT_PENDING: kern.boottime=\(snapshot.bootTime) bootSession=\(snapshot.bootSession.map { String($0.prefix(8)) } ?? "unavailable"); " +
+                   "alice \(fingerprint(a.ownPin)) bob \(fingerprint(b.ownPin)); conversation \(hex(base.conversation)). " +
+                   "Now REBOOT the iPhone, unlock, relaunch, tap Reboot Test: Verify. No reboot is claimed yet.",
+                   version: aliceVersion)
         }
+    }
+
+    public func rebootVerify() {
+        guard let run = requireRun("Reboot Test: Verify") else { return }
+        guarded("Reboot Test: Verify") {
+            var base = try baseline()
+            guard let prepared = base.rebootPending else {
+                return record("Reboot Test: Verify", "SKIP", "no reboot test pending; tap Reboot Test: Prepare first")
+            }
+            let now = bootSource()
+            let evidence = "kern.boottime \(prepared.bootTime) -> \(now.bootTime); prepared at \(prepared.wallClock); " +
+                "bootSession \(prepared.bootSession.map { String($0.prefix(8)) } ?? "n/a") -> \(now.bootSession.map { String($0.prefix(8)) } ?? "n/a")"
+            guard BootSnapshot.rebootObserved(prepared: prepared, now: now) else {
+                return record("Reboot Test: Verify", "NOT_OBSERVED",
+                              "REBOOT_NOT_OBSERVED (\(evidence)); still pending; no PASS claimed")
+            }
+            record("Reboot Test: Verify", "PASS", "REBOOT_OBSERVED: \(evidence)")
+            let before = results.count
+            try verifyRestore("Reboot Test: Verify", run: run, base: base, after: "reboot + first unlock")
+            if !results.dropFirst(before).contains(where: { $0.status == "FAIL" }) {
+                base = try baseline()
+                base.rebootPending = nil  // cleared only after successful verification
+                try save(base)
+            }
+        }
+    }
+
+    /// Same identity, conversation, expected stateVersion, and working messaging.
+    func verifyRestore(_ test: String, run: String, base: Baseline, after: String) throws {
+        var base = base
+        let booted = bootSource().bootTime
+        let a = try open(run, "main", "alice")
+        let b = try open(run, "main", "bob")
+        check(test, a.ownPin == base.alicePin && b.ownPin == base.bobPin,
+              "same identity fingerprints alice \(fingerprint(a.ownPin)) bob \(fingerprint(b.ownPin)); no regeneration")
+        check(test, a.document.conversation == base.conversation && a.document.lifecycle == .established
+              && b.document.lifecycle == .established && a.document.security == .ok,
+              "same conversation \(hex(base.conversation)); established; security ok")
+        let versionsOK = version(a) == base.aliceVersion && version(b) == base.bobVersion
+        check(test, versionsOK, "stateVersion unchanged since last checkpoint", version: version(a))
+        try a.send(Data(plaintextMarkers[0].utf8))
+        let got = try b.sync()
+        check(test, got == [Data(plaintextMarkers[0].utf8)], "messaging state restores after \(after)")
+        base.aliceVersion = version(a) ?? 0
+        base.bobVersion = version(b) ?? 0
+        base.bootTime = booted
+        try save(base)
     }
 
     // MARK: Lock Test
@@ -507,7 +584,7 @@ public final class QualificationLab {
             let relayStatus = try a2.relay.post(base.conversation, kind: "application", base: 1, data: Data(), sender: "alice")
             check("Wipe Test", rejected && relayStatus == .reject, "retired conversation_id rejected by device and relay")
             try save(Baseline(conversation: a2.document.conversation!, alicePin: a2.ownPin, bobPin: b2.ownPin,
-                              aliceVersion: version(a2) ?? 0, bobVersion: version(b2) ?? 0, bootTime: bootTime(),
+                              aliceVersion: version(a2) ?? 0, bobVersion: version(b2) ?? 0, bootTime: bootSource().bootTime,
                               ownNonce: a2.document.ownNonce))
         }
     }
@@ -628,6 +705,15 @@ func fileReadable(_ url: URL) -> String {
         let posix = (error.userInfo[NSUnderlyingErrorKey] as? NSError)?.code ?? error.code
         return "unreadable(\(error.domain == NSCocoaErrorDomain ? "cocoa" : error.domain):\(error.code)/\(posix))"
     }
+}
+
+func bootSessionUUID() -> String? {
+    var size = 0
+    guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 1 else { return nil }
+    var buffer = [CChar](repeating: 0, count: size)
+    guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return nil }
+    let value = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    return value.isEmpty ? nil : value
 }
 
 func bootTime() -> Int64 {

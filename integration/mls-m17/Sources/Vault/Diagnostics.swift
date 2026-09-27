@@ -94,7 +94,7 @@ struct DiagnosticsView: View {
         } catch { note = "inject failed: \(Self.kind(error))" }
     }
 
-    static func kind(_ error: Error) -> String { String(describing: type(of: error)) }
+    static func kind(_ error: Swift.Error) -> String { String(describing: type(of: error)) }
     static func short(_ data: Data?) -> String { data.map { Data(SHA256.hash(data: $0)).prefix(4).hex } ?? "-" }
 
     static func report(store: WatchlinkStore, transport: LiveTransport?) -> String {
@@ -103,44 +103,50 @@ struct DiagnosticsView: View {
         uname(&system)
         let machine = withUnsafeBytes(of: system.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
         let info = Bundle.main.infoDictionary ?? [:]
-        lines += [
-            "device: \(UIDevice.current.model) \(machine) iOS \(UIDevice.current.systemVersion)",
-            "build: \(info["CFBundleShortVersionString"] ?? "?") (\(info["CFBundleVersion"] ?? "?"))",
-            "relay: \(URL(string: info["WatchlinkRelayURL"] as? String ?? "")?.host ?? "none")",
-            "ui state: \(store.securityState); connection: \(store.connectionAvailable ? "ok" : "unavailable")",
-        ]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        let relayHost = URL(string: info["WatchlinkRelayURL"] as? String ?? "")?.host ?? "none"
+        lines.append("device: \(UIDevice.current.model) \(machine) iOS \(UIDevice.current.systemVersion)")
+        lines.append("build: \(version) (\(build))")
+        lines.append("relay: \(relayHost)")
+        lines.append("ui state: \(store.securityState); connection: \(store.connectionAvailable ? "ok" : "unavailable")")
         guard let engine = transport?.worker.engine else { return (lines + ["engine: no transport"]).joined(separator: "\n") }
         lines.append("engine state: \(engine.securityState)")
         lines.append("wire plaintext checks: passed \(engine.wireChecks.passed), failed \(engine.wireChecks.failed)")
         if let device = engine.device {
             let document = device.store.committed
             let anchor = try? device.store.anchorStore.load()
-            lines += [
-                "own pin: \(device.ownPin.prefix(4).hex)  peer pin: \(document.peerPin?.prefix(4).hex ?? "-")",
-                "conversation: \(short(document.conversation))",
-                "lifecycle: \(document.lifecycle.rawValue)  security: \(document.security.rawValue)",
-                "epoch: \(device.group.map { String($0.currentEpoch()) } ?? "-")  lastSeq: \(document.lastSeq)",
-                "stateVersion: \(anchor.map { String($0.committedVersion) } ?? "?")"
-                    + "  pending: \(anchor?.pendingVersion.map(String.init) ?? "none")",
-                "pending commit: \(document.pendingCommit.map { "base \($0.base) \(Data($0.commitId.prefix(4)).hex)" } ?? "none")",
-                "outbound: " + (document.outbound.isEmpty ? "none"
-                    : document.outbound.map { "\($0.kind) \(short($0.data))" }.joined(separator: ", ")),
-                "key packages outstanding: \(document.keyPackages.count)",
-            ]
+            let epoch = device.group.map { String($0.currentEpoch()) } ?? "-"
+            let committedVersion = anchor.map { String($0.committedVersion) } ?? "?"
+            let pendingVersion = anchor?.pendingVersion.map { String($0) } ?? "none"
+            let pendingCommit = document.pendingCommit.map { "base \($0.base) \(Data($0.commitId.prefix(4)).hex)" } ?? "none"
+            let outbound = document.outbound.map { "\($0.kind) \(short($0.data))" }
+            lines.append("own pin: \(device.ownPin.prefix(4).hex)  peer pin: \(document.peerPin?.prefix(4).hex ?? "-")")
+            lines.append("conversation: \(short(document.conversation))")
+            lines.append("lifecycle: \(document.lifecycle.rawValue)  security: \(document.security.rawValue)")
+            lines.append("epoch: \(epoch)  lastSeq: \(document.lastSeq)")
+            lines.append("stateVersion: \(committedVersion)  pending: \(pendingVersion)")
+            lines.append("pending commit: \(pendingCommit)")
+            lines.append("outbound: " + (outbound.isEmpty ? "none" : outbound.joined(separator: ", ")))
+            lines.append("key packages outstanding: \(document.keyPackages.count)")
         } else {
             lines.append("identity: none")
         }
         let worker = transport!.worker
-        lines += [
-            "delivery: \(worker.paused ? "PAUSED" : "active")  last error: \(worker.lastError.map { "\($0)" } ?? "none")",
-            "last relay success: \(worker.lastSuccess.map { ISO8601DateFormatter().string(from: $0) } ?? "never")",
-            "memberships: " + worker.memberships.load().map {
-                "\(short($0.conversation)) \($0.creator ? "creator" : "joiner") "
-                    + "\($0.registered ? "registered" : "unregistered")\($0.retiring ? " retiring" : "")"
-            }.joined(separator: ", "),
-            "messages: sent \(store.messages.filter(\.isMine).count), received \(store.messages.filter { !$0.isMine }.count), "
-                + "pending \(store.messages.filter { $0.delivery == .pending }.count)",
-        ]
+        let memberships = worker.memberships.load().map { membership -> String in
+            let role = membership.creator ? "creator" : "joiner"
+            let state = membership.registered ? "registered" : "unregistered"
+            return "\(short(membership.conversation)) \(role) \(state)\(membership.retiring ? " retiring" : "")"
+        }
+        let sent = store.messages.filter(\.isMine).count
+        let received = store.messages.count - sent
+        let pending = store.messages.filter { $0.delivery == .pending }.count
+        let lastError = worker.lastError.map { "\($0)" } ?? "none"
+        let lastSuccess = worker.lastSuccess.map { ISO8601DateFormatter().string(from: $0) } ?? "never"
+        lines.append("delivery: \(worker.paused ? "PAUSED" : "active")  last error: \(lastError)")
+        lines.append("last relay success: \(lastSuccess)")
+        lines.append("memberships: " + memberships.joined(separator: ", "))
+        lines.append("messages: sent \(sent), received \(received), pending \(pending)")
         return lines.joined(separator: "\n")
     }
 }

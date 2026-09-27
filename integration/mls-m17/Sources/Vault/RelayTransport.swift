@@ -265,6 +265,7 @@ final class TransportWorker {
     private(set) var lastError: RelayError?
     private(set) var lastSuccess: Date?
     private var running = false
+    private var rerun = false
 
     init(engine: MLSCryptoEngine, api: any RelayAPI, port: RelayPort, memberships: MembershipStore) {
         self.engine = engine
@@ -274,15 +275,28 @@ final class TransportWorker {
     }
 
     /// One delivery round; returns authenticated plaintexts that became available.
+    /// Plaintexts are returned even if a later network step in the same round
+    /// fails: once the engine produced them, the MLS state has already advanced.
     @discardableResult
     func tick() async -> [String] {
-        guard !running, !paused else { return [] }
+        guard !paused else { return [] }
+        guard !running else { rerun = true; return [] }  // a request arrived mid-round: run again after it
         running = true
-        defer { running = false }
+        var plaintexts: [String] = []
+        await round(into: &plaintexts)
+        running = false
+        if rerun {
+            rerun = false
+            plaintexts += await tick()
+        }
+        return plaintexts
+    }
+
+    private func round(into plaintexts: inout [String]) async {
         await retireOld()
         guard let conversation = engine.device?.document.conversation,
               var membership = memberships.load().first(where: { $0.conversation == conversation && !$0.retiring })
-        else { return [] }
+        else { return }
         do {
             if !membership.registered {
                 try await register(&membership)
@@ -290,9 +304,9 @@ final class TransportWorker {
             try await deliver(conversation, membership.credential)
             let fetched = try await api.fetch(conversation, credential: membership.credential,
                                               after: engine.device?.document.lastSeq ?? 0)
-            guard engine.device?.document.conversation == conversation else { return [] }  // reset meanwhile
+            guard engine.device?.document.conversation == conversation else { return }  // reset meanwhile
             port.merge(fetched)
-            var plaintexts = engine.pump(port)
+            plaintexts += engine.pump(port)
             // A decided commit may have released more committed bytes (e.g. the Welcome).
             try await deliver(conversation, membership.credential)
             plaintexts += engine.pump(port)
@@ -303,13 +317,11 @@ final class TransportWorker {
             }
             lastError = nil
             lastSuccess = Date()
-            return plaintexts
         } catch let error as RelayError {
             lastError = error
         } catch {
             lastError = .http(0)  // network unreachable/timeout: transient
         }
-        return []
     }
 
     /// Transmits committed outbound bytes (commit first) that have no relay answer yet.
@@ -371,12 +383,14 @@ extension Data {
 final class LiveTransport: TransportHooks {
     let worker: TransportWorker
     weak var store: WatchlinkStore?
+    /// Tests drive rounds explicitly for determinism.
+    var kicks = true
 
     init(worker: TransportWorker) { self.worker = worker }
 
     func adopt(code: Data, creator: Bool) throws { try worker.memberships.adopt(code: code, creator: creator) }
     func retireAll() throws { try worker.memberships.markRetiring(except: nil) }
-    func kick() { Task { await round() } }
+    func kick() { if kicks { Task { await round() } } }
 
     func round() async {
         let plaintexts = await worker.tick()

@@ -202,6 +202,20 @@ final class TransportQualificationTests: XCTestCase {
         assertNoPlaintext(relay)
     }
 
+    /// Regression: a network failure later in the same round must not swallow
+    /// plaintext the engine already produced (its MLS state has advanced).
+    func testPlaintextSurvivesLaterNetworkFailureInSameRound() async throws {
+        let relay = FakeRelayAPI(clock: clock)
+        let adversary = AdversarialRelayAPI(relay)
+        let a = endpoint(relay), b = endpoint(adversary)
+        try await pair(a, b)
+        adversary.modes = [.ackFails]
+        _ = a.store.send("kept")
+        await settle(a, b)
+        XCTAssertEqual(b.received, ["kept"], "shown exactly once despite ack failures")
+        XCTAssertEqual(b.worker.lastError, .http(0))
+    }
+
     // MARK: C. Replay / duplicate
 
     func testC16to18DuplicateAndReplayedDeliveryYieldsOnePlaintextAndNoMutation() async throws {

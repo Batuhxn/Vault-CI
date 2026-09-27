@@ -132,7 +132,7 @@ final class FakeRelayAPI: RelayAPI {
 final class AdversarialRelayAPI: RelayAPI {
     enum Mode: Hashable {
         case duplicate, reorder, dropAck, dropMessage, replayPrior, replayCommit, forgeFutureSeq, wrongBase, corrupt, truncate
-        case randomBytes, forgedAccept, delay
+        case randomBytes, forgedAccept, delay, ackFails
     }
 
     let inner: FakeRelayAPI
@@ -187,6 +187,7 @@ final class AdversarialRelayAPI: RelayAPI {
     }
 
     func ack(_ c: Data, credential: Data, through: UInt64) async throws {
+        if modes.contains(.ackFails) { throw URLError(.timedOut) }
         try await inner.ack(c, credential: credential, through: through)
     }
 
@@ -216,6 +217,7 @@ final class Endpoint {
         worker = TransportWorker(engine: engine, api: api, port: port,
                                  memberships: MembershipStore(service: service + ".transport"))
         transport = LiveTransport(worker: worker)
+        transport.kicks = false  // deterministic: tests run every delivery round explicitly
         store = WatchlinkStore(engine: engine)
         store.hooks = transport
         transport.store = store

@@ -162,9 +162,10 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/M17QualDerivedData" CODE_SIGNING_ALLOWED=NO \
             SWIFT_ACTIVE_COMPILATION_CONDITIONS=WATCHLINK_QUALIFICATION WATCHLINK_RELAY_URL=https://relay.invalid
           app="$RUNNER_TEMP/M17QualDerivedData/Build/Products/Release-iphoneos/Vault-App.app"
-          strings -a "$app/Vault-App" | grep -q DiagnosticsView
+          strings -a "$app/Vault-App" > "$RUNNER_TEMP/m17-qual-strings.txt"
+          grep -q DiagnosticsView "$RUNNER_TEMP/m17-qual-strings.txt"
           test "$(/usr/libexec/PlistBuddy -c 'Print :WatchlinkRelayURL' "$app/Info.plist")" = https://relay.invalid
-          if strings -a "$app/Vault-App" | grep -qE '11RelayClientC|9ChatStoreC'; then exit 1; fi
+          if grep -qE '11RelayClientC|9ChatStoreC' "$RUNNER_TEMP/m17-qual-strings.txt"; then exit 1; fi
           echo 'Qualification Release: diagnostics compiled in, legacy demo absent: PASS'
 
       # ---- Signed Ad Hoc qualification IPA (manual dispatch only) ----
@@ -265,7 +266,8 @@ jobs:
           codesign --verify --deep --strict "$app"
           [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")" = "$BUNDLE_ID" ]
           [ "$(/usr/libexec/PlistBuddy -c 'Print :WatchlinkRelayURL' "$app/Info.plist")" = "${RELAY_URL%/}" ]
-          strings -a "$app/Vault-App" | grep -q DiagnosticsView
+          strings -a "$app/Vault-App" > "$RUNNER_TEMP/watchlink-m17-strings.txt"
+          grep -q DiagnosticsView "$RUNNER_TEMP/watchlink-m17-strings.txt"
           mkdir -p "$RUNNER_TEMP/watchlink-m17-out"
           out="$RUNNER_TEMP/watchlink-m17-out/Watchlink-M17-$BUILD_NUMBER.ipa.age"
           age -r "$AGE_RECIPIENT" -o "$out" "$ipa"

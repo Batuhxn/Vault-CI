@@ -16,30 +16,22 @@ struct ChatsHomeView: View {
                     .accessibilityLabel("Settings")
             }.padding(.horizontal, 24).padding(.vertical, 15)
             Divider().overlay(WatchlinkStyle.hairline)
-            if store.messages.isEmpty {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 28))
-                    Text("No conversations yet.").font(.system(size: 17, weight: .semibold))
-                    Text("Your linked conversations will appear here.").font(.system(size: 15))
-                }.foregroundStyle(WatchlinkStyle.secondary)
-                Spacer()
-            } else {
-                Button { showConversation = true } label: {
-                    HStack(spacing: 14) {
-                        Text("E").font(.system(size: 16, weight: .semibold)).foregroundStyle(WatchlinkStyle.tint)
-                            .frame(width: 48, height: 48).background(WatchlinkStyle.soft, in: Circle())
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Linked device").font(.system(size: 17, weight: .semibold)).foregroundStyle(WatchlinkStyle.text)
-                            Text(store.messages.last?.text ?? "").font(.system(size: 15))
-                                .foregroundStyle(WatchlinkStyle.secondary).lineLimit(1)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
-                    }.padding(.horizontal, 24).padding(.vertical, 14)
-                }.buttonStyle(.plain)
-                Spacer()
-            }
+            // This screen is only reachable with an established link, so the
+            // conversation is always available to open, even before any message.
+            Button { showConversation = true } label: {
+                HStack(spacing: 14) {
+                    Text("E").font(.system(size: 16, weight: .semibold)).foregroundStyle(WatchlinkStyle.tint)
+                        .frame(width: 48, height: 48).background(WatchlinkStyle.soft, in: Circle())
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Linked device").font(.system(size: 17, weight: .semibold)).foregroundStyle(WatchlinkStyle.text)
+                        Text(store.messages.last?.text ?? "Secure link ready. Say hello.").font(.system(size: 15))
+                            .foregroundStyle(WatchlinkStyle.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
+                }.padding(.horizontal, 24).padding(.vertical, 14)
+            }.buttonStyle(.plain).accessibilityLabel("Open conversation with linked device")
+            Spacer()
         }
         .sheet(isPresented: $showConversation) { ChatView(store: store) }
     }
@@ -52,18 +44,23 @@ struct SecurityStatusView: View {
         HStack(spacing: 5) {
             Circle().fill(state == .secure && connected ? WatchlinkStyle.online : WatchlinkStyle.away)
                 .frame(width: 6, height: 6)
-            Text(label).font(.system(size: 12))
+            Text(Self.label(state, connected: connected)).font(.system(size: 12))
         }.foregroundStyle(WatchlinkStyle.secondary)
         .accessibilityElement(children: .combine)
     }
-    private var label: String {
+
+    /// Only a verified, established session can read as secure; relay
+    /// reachability alone never does.
+    static func label(_ state: SecurityState, connected: Bool) -> String {
         switch state {
-        case .secure: return connected ? "Connected" : "Connection unavailable"
-        case .identityChanged: return "Review security"
+        case .secure: return connected ? "Secure connection established" : "Connection unavailable"
+        case .identityChanged: return "Identity changed"
         case .sessionUpdatePending: return "Updating security"
-        case .pairing, .establishingSecureSession: return "Connecting"
-        case .notPaired: return "Not linked"
-        case .unavailable, .error: return "Unavailable"
+        case .pairing: return "Waiting for partner"
+        case .establishingSecureSession: return "Verifying secure link"
+        case .notPaired: return "Not paired"
+        case .unavailable: return "Unavailable"
+        case .error: return "Security reset required"
         }
     }
 }

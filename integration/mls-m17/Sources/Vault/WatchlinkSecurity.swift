@@ -139,7 +139,18 @@ final class WatchlinkStore {
 
     /// Text limit; ciphertext stays well inside the relay's 64 KiB envelope cap.
     static let maxMessageBytes = 16 * 1024
-    var rootState: RootState { securityState.root }
+    /// Pairing screens are derived from engine state. Before any identity exists,
+    /// the joiner's explicit "Scan Partner Code" choice is remembered here, so the
+    /// periodic refresh can never snap the screen back (the M1.7 scanner race).
+    private(set) var joining = false
+    /// Camera scanner presentation; only user actions and scan results change it.
+    private(set) var scanner: ScannerState = .idle
+    @ObservationIgnored var camera: any CameraAccess = SystemCameraAccess()
+
+    enum ScannerState: Equatable { case idle, requestingPermission, scanning, permissionDenied, failed }
+    enum ScanOutcome: Equatable { case ignored, accepted, rejected }
+
+    var rootState: RootState { securityState == .notPaired && joining ? .pairing : securityState.root }
     var canSend: Bool { securityState.canSend && engine.securityState.canSend }
 
     /// `securityState` is a presentation override; it can never exceed what the engine permits.
@@ -224,8 +235,38 @@ final class WatchlinkStore {
             return false
         }
     }
-    func beginPairing() { if securityState == .notPaired { transition(to: .pairing) } }
+    func beginPairing() { if securityState == .notPaired { joining = true } }
+
+    /// One tap: request permission if needed, then present the scanner.
+    func requestScan() async {
+        guard scanner != .scanning, scanner != .requestingPermission else { return }
+        switch camera.permission {
+        case .authorized:
+            scanner = .scanning
+        case .notDetermined:
+            scanner = .requestingPermission
+            scanner = await camera.requestAccess() ? .scanning : .permissionDenied
+        case .denied:
+            scanner = .permissionDenied
+        }
+    }
+
+    func cancelScan() { if scanner == .scanning || scanner == .requestingPermission { scanner = .idle } }
+    func scannerFailed() { scanner = .failed }
+    func acknowledgeScannerNotice() { if scanner == .permissionDenied || scanner == .failed { scanner = .idle } }
+
+    /// A payload that is not a Watchlink pairing code keeps the scanner open;
+    /// a Watchlink code is processed exactly once and closes it.
+    func scanned(_ code: Data) -> ScanOutcome {
+        guard scanner == .scanning, (try? JSONDecoder().decode(PairingCode.self, from: code)) != nil else {
+            return .ignored
+        }
+        scanner = .idle
+        return acceptScanned(code) ? .accepted : .rejected
+    }
     func cancelPairing() {
+        joining = false
+        scanner = .idle
         if engine.pairingLifecycle.map({ [.offered, .joinPending, .pinned].contains($0) }) == true {
             try? hooks?.retireAll()
             try? engine.cancelPairing()
@@ -249,6 +290,8 @@ final class WatchlinkStore {
 
     /// Explicit user action only.
     func resetSecurity() {
+        joining = false
+        scanner = .idle
         try? hooks?.retireAll()  // the relay will refuse the old conversation from now on
         try? engine.resetSecurity()
         messages = []

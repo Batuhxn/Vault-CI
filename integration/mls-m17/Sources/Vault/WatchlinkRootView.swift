@@ -4,9 +4,7 @@ struct WatchlinkRootView: View {
     let store: WatchlinkStore
     let transport: LiveTransport?
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showingSetup = false
     @State private var confirmingReset = false
-    @State private var scanning = false
     @State private var showingReviewInfo = false
     @State private var pairingError = false
     @State private var showingDiagnostics = false
@@ -21,7 +19,7 @@ struct WatchlinkRootView: View {
             switch store.rootState {
             case .welcome: welcome
             case .pairing: pairing
-            case .establishing: statusPage("Setting up your link", "Waiting for a secure session.", symbol: "arrow.triangle.2.circlepath")
+            case .establishing: statusPage("Verifying secure link", "Keep both devices open.", symbol: "arrow.triangle.2.circlepath")
             case .chats: ChatsHomeView(store: store)
             case .identityReview: identityReview
             case .unavailable: unavailable
@@ -30,17 +28,38 @@ struct WatchlinkRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WatchlinkStyle.background.ignoresSafeArea())
         .foregroundStyle(WatchlinkStyle.text)
-        .sheet(isPresented: $showingSetup) { setup }
         .onChange(of: scenePhase) { _, phase in if phase == .active { store.reopenIfUnavailable() } }
         // Foreground-only delivery; nothing depends on the app staying alive.
         .task(id: scenePhase == .active) { if scenePhase == .active { await transport?.run() } }
-        .sheet(isPresented: $scanning) {
-            PairingScanner { code in
-                scanning = false
-                if !store.acceptScanned(code) { pairingError = true }
-            }
-            .ignoresSafeArea()
+        // Presentation is bound to store state that only user actions and scan
+        // results change; periodic refreshes never dismiss it.
+        .fullScreenCover(isPresented: Binding(get: { store.scanner == .scanning },
+                                              set: { if !$0 { store.cancelScan() } })) {
+            PairingScannerScreen(
+                onCode: { code in
+                    switch store.scanned(code) {
+                    case .ignored: return false
+                    case .accepted: return true
+                    case .rejected:
+                        // Shown after the scanner has finished dismissing.
+                        Task { try? await Task.sleep(for: .milliseconds(600)); pairingError = true }
+                        return true
+                    }
+                },
+                onCancel: { store.cancelScan() },
+                onFailure: { store.scannerFailed() })
         }
+        .alert("Camera access needed", isPresented: Binding(get: { store.scanner == .permissionDenied },
+                                                           set: { if !$0 { store.acknowledgeScannerNotice() } })) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("Allow camera access in Settings to scan your partner's code.") }
+        .alert("Camera unavailable", isPresented: Binding(get: { store.scanner == .failed },
+                                                          set: { if !$0 { store.acknowledgeScannerNotice() } })) {
+            Button("OK", role: .cancel) { }
+        } message: { Text("The camera could not be started. Try again.") }
         #if WATCHLINK_QUALIFICATION
         .overlay(alignment: .topTrailing) {
             Button { showingDiagnostics = true } label: { Image(systemName: "stethoscope").padding(12) }
@@ -73,37 +92,14 @@ struct WatchlinkRootView: View {
             }
             Spacer()
             VStack(spacing: 16) {
-                WatchlinkPrimaryButton(title: "Get Started") { showingSetup = true }
-                Text("by Batuhxn").font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
-            }
-            .padding(.horizontal, 24).padding(.bottom, 34)
-        }
-    }
-
-    private var setup: some View {
-        NavigationStack {
-            VStack(spacing: 20) {
-                Spacer()
-                WatchlinkMark(size: 72)
-                Text("Link a device").font(.system(size: 28, weight: .semibold))
-                Text("Create a private connection with another Watchlink device.")
-                    .font(.system(size: 17)).foregroundStyle(WatchlinkStyle.secondary)
-                    .multilineTextAlignment(.center).padding(.horizontal, 40)
-                Spacer()
-                WatchlinkPrimaryButton(title: "Create Link") {
-                    showingSetup = false
-                    if !store.createLink() { pairingError = true }
-                }
-                Button("Scan Link") { showingSetup = false; store.beginPairing() }
+                WatchlinkPrimaryButton(title: "Create Secure Link") { if !store.createLink() { pairingError = true } }
+                Button("Scan Partner Code") { store.beginPairing(); Task { await store.requestScan() } }
                     .font(.system(size: 17, weight: .semibold)).foregroundStyle(WatchlinkStyle.tint)
                     .frame(maxWidth: .infinity).frame(height: 50)
                     .background(WatchlinkStyle.soft, in: RoundedRectangle(cornerRadius: 14))
-                Text("Open Watchlink on the other device to begin.")
-                    .font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
+                Text("by Batuhxn").font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
             }
-            .padding(24)
-            .background(WatchlinkStyle.background.ignoresSafeArea())
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { showingSetup = false } } }
+            .padding(.horizontal, 24).padding(.bottom, 34)
         }
     }
 
@@ -123,27 +119,30 @@ struct WatchlinkRootView: View {
                 PairingCodeImage(code: code)
                     .padding(16).frame(width: 264, height: 264)
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 20))
-                Text(scanPartnerNext ? "Show this code to your partner" : "Show this code to your partner to finish")
-                    .font(.system(size: 17, weight: .semibold)).padding(.top, 24)
-                Text(scanPartnerNext ? "Then scan the code their device shows you." : "Waiting for partner…")
+                Text("Waiting for partner").font(.system(size: 17, weight: .semibold)).padding(.top, 24)
+                Text(scanPartnerNext ? "Show this code to your partner, then scan the code their device shows."
+                                     : "Show this code to your partner to finish.")
                     .font(.system(size: 15)).foregroundStyle(WatchlinkStyle.secondary)
                     .multilineTextAlignment(.center).padding(.top, 5)
                 if scanPartnerNext {
-                    WatchlinkPrimaryButton(title: "Scan Partner's Code") { scanning = true }.padding(.top, 24)
+                    WatchlinkPrimaryButton(title: "Scan Partner Code") { Task { await store.requestScan() } }.padding(.top, 24)
                 }
             case .waiting:
-                statusPage("Waiting for partner…", "Keep both devices open until the link is ready.", symbol: "arrow.triangle.2.circlepath")
+                statusPage("Verifying secure link", "Keep both devices open until the link is ready.", symbol: "arrow.triangle.2.circlepath")
             case .expired:
                 statusPage("Code expired", "Cancel and create a new link.", symbol: "clock.badge.exclamationmark")
             case .none:
-                statusPage("Scan a link code", "Scan the code shown on your partner's device.", symbol: "viewfinder")
-                WatchlinkPrimaryButton(title: "Scan Link") { scanning = true }
+                statusPage("Scan partner code", "Scan the code shown on your partner's device.", symbol: "viewfinder")
+                WatchlinkPrimaryButton(title: "Scan Partner Code") { Task { await store.requestScan() } }
             }
             Spacer()
-            HStack(spacing: 8) {
-                Circle().fill(store.connectionAvailable ? WatchlinkStyle.away : WatchlinkStyle.secondary).frame(width: 7, height: 7)
-                Text(store.connectionAvailable ? "Connecting…" : "Connection unavailable").font(.system(size: 13))
-            }.foregroundStyle(WatchlinkStyle.secondary).padding(.bottom, 34)
+            // Relay reachability is never shown as a secure state; only its absence is reported.
+            if !store.connectionAvailable {
+                HStack(spacing: 8) {
+                    Circle().fill(WatchlinkStyle.secondary).frame(width: 7, height: 7)
+                    Text("Connection unavailable").font(.system(size: 13))
+                }.foregroundStyle(WatchlinkStyle.secondary).padding(.bottom, 34)
+            }
         }
         .padding(.horizontal, 24)
     }

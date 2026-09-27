@@ -85,7 +85,7 @@ jobs:
             python3 qualified/m15/pick-simulator.py "$sdk" "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
           if [ "$udid" = '-' ]; then udid="$(xcrun simctl create Watchlink-M17-CI "$device_type" "$runtime_id")"; fi
           echo "Using iOS Simulator $runtime_version"
-          for suite in Vault-AppTests:73 WatchlinkMLS-QualifiedTests:24; do
+          for suite in Vault-AppTests:79 WatchlinkMLS-QualifiedTests:24; do
             target="${suite%%:*}" expected="${suite##*:}"
             log="$RUNNER_TEMP/$target.log"
             set +e

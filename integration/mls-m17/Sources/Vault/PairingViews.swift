@@ -25,31 +25,88 @@ struct PairingCodeImage: View {
     }
 }
 
-/// Minimal native QR scanner. Delivers the raw payload once; nothing is logged or kept.
+enum CameraPermission: Equatable { case authorized, notDetermined, denied }
+
+/// Camera authorization, injectable for tests.
+protocol CameraAccess {
+    var permission: CameraPermission { get }
+    func requestAccess() async -> Bool
+}
+
+struct SystemCameraAccess: CameraAccess {
+    var permission: CameraPermission {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized: return .authorized
+        case .notDetermined: return .notDetermined
+        default: return .denied
+        }
+    }
+
+    func requestAccess() async -> Bool { await AVCaptureDevice.requestAccess(for: .video) }
+}
+
+/// Full-screen scanner with an explicit Cancel. It stays up until a Watchlink
+/// code is processed, the user cancels, or the camera fails.
+struct PairingScannerScreen: View {
+    let onCode: (Data) -> Bool
+    let onCancel: () -> Void
+    let onFailure: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            PairingScanner(onCode: onCode, onFailure: onFailure).ignoresSafeArea()
+            HStack {
+                Button("Cancel", action: onCancel).font(.system(size: 17, weight: .semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 20).padding(.vertical, 12)
+            .foregroundStyle(.white)
+            .background(.black.opacity(0.35))
+            Text("Scan your partner's Watchlink code").font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white).padding(12).background(.black.opacity(0.35), in: Capsule())
+                .frame(maxHeight: .infinity, alignment: .bottom).padding(.bottom, 48)
+        }
+    }
+}
+
+/// Minimal native QR scanner. Nothing is logged or kept.
 struct PairingScanner: UIViewControllerRepresentable {
-    let onCode: (Data) -> Void
+    /// Returns true when the payload was consumed; false keeps scanning.
+    let onCode: (Data) -> Bool
+    let onFailure: () -> Void
 
     func makeUIViewController(context: Context) -> ScannerController {
         let controller = ScannerController()
         controller.onCode = onCode
+        controller.onFailure = onFailure
         return controller
     }
 
     func updateUIViewController(_ controller: ScannerController, context: Context) {}
 
     final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
-        var onCode: ((Data) -> Void)?
+        var onCode: ((Data) -> Bool)?
+        var onFailure: (() -> Void)?
         private let session = AVCaptureSession()
         private var delivered = false
+        private var ignored: Set<String> = []
 
         override func viewDidLoad() {
             super.viewDidLoad()
             view.backgroundColor = .black
             guard let camera = AVCaptureDevice.default(for: .video),
-                  let input = try? AVCaptureDeviceInput(device: camera), session.canAddInput(input) else { return }
+                  let input = try? AVCaptureDeviceInput(device: camera), session.canAddInput(input) else {
+                fail()
+                return
+            }
             session.addInput(input)
             let output = AVCaptureMetadataOutput()
-            guard session.canAddOutput(output) else { return }
+            guard session.canAddOutput(output) else {
+                fail()
+                return
+            }
+            NotificationCenter.default.addObserver(self, selector: #selector(runtimeError),
+                                                   name: AVCaptureSession.runtimeErrorNotification, object: session)
             session.addOutput(output)
             output.setMetadataObjectsDelegate(self, queue: .main)
             output.metadataObjectTypes = [.qr]
@@ -77,11 +134,23 @@ struct PairingScanner: UIViewControllerRepresentable {
 
         func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject],
                             from connection: AVCaptureConnection) {
-            guard !delivered, let value = (objects.first as? AVMetadataMachineReadableCodeObject)?.stringValue
-            else { return }
+            guard !delivered, let value = (objects.first as? AVMetadataMachineReadableCodeObject)?.stringValue,
+                  !ignored.contains(value) else { return }
+            if onCode?(Data(value.utf8)) == true {
+                delivered = true
+                session.stopRunning()
+            } else {
+                ignored.insert(value)  // not a Watchlink code: keep scanning, don't re-evaluate it
+            }
+        }
+
+        @objc private func runtimeError() { DispatchQueue.main.async { self.fail() } }
+
+        /// Reported asynchronously so a failure during presentation never races the presentation itself.
+        private func fail() {
+            guard !delivered else { return }
             delivered = true
-            session.stopRunning()
-            onCode?(Data(value.utf8))
+            DispatchQueue.main.async { self.onFailure?() }
         }
     }
 }

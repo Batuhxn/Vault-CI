@@ -1,0 +1,63 @@
+diff --git a/mls-rs-uniffi/src/lib.rs b/mls-rs-uniffi/src/lib.rs
+index 80120ea..93b6310 100644
+--- a/mls-rs-uniffi/src/lib.rs
++++ b/mls-rs-uniffi/src/lib.rs
+@@ -202,6 +202,13 @@ impl Message {
+     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+         Ok(self.inner.to_bytes()?)
+     }
++
++    /// Signing identity of a key package message; `None` for other messages.
++    pub fn key_package_signing_identity(&self) -> Option<Arc<SigningIdentity>> {
++        self.inner
++            .as_key_package()
++            .map(|key_package| Arc::new(key_package.signing_identity().clone().into()))
++    }
+ }
+ 
+ #[derive(Clone, Debug, uniffi::Object)]
+@@ -585,6 +592,22 @@ impl From<identity::SigningIdentity> for SigningIdentity {
+     }
+ }
+ 
++// Downstream read-only accessors for identity pinning.
++#[uniffi::export]
++impl SigningIdentity {
++    pub fn signature_public_key(&self) -> Vec<u8> {
++        self.inner.signature_key.to_vec()
++    }
++
++    /// `None` if the credential is not a basic credential.
++    pub fn basic_identifier(&self) -> Option<Vec<u8>> {
++        self.inner
++            .credential
++            .as_basic()
++            .map(|basic| basic.identifier().to_vec())
++    }
++}
++
+ /// An MLS end-to-end encrypted group.
+ ///
+ /// The group is used to send and process incoming messages and to
+@@ -638,6 +661,21 @@ async fn signing_identity_to_identifier(
+ #[cfg_attr(mls_build_async, maybe_async::must_be_async)]
+ #[uniffi::export]
+ impl Group {
++    /// Signing identities of the current members, in leaf index order.
++    pub async fn roster(&self) -> Vec<Arc<SigningIdentity>> {
++        let group = self.inner().await;
++        group
++            .roster()
++            .members_iter()
++            .map(|member| Arc::new(member.signing_identity.into()))
++            .collect()
++    }
++
++    /// See [`mls_rs::Group::current_epoch`].
++    pub async fn current_epoch(&self) -> u64 {
++        self.inner().await.current_epoch()
++    }
++
+     /// Write the current state of the group to storage defined by
+     /// [`ClientConfig::group_state_storage`]
+     pub async fn write_to_storage(&self) -> Result<(), Error> {

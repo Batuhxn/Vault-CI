@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- HTTPS relay base URL, injected at build time (never committed). Empty = no transport (fail closed). -->
+	<key>WatchlinkRelayURL</key>
+	<string>$(WATCHLINK_RELAY_URL)</string>
+</dict>
+</plist>

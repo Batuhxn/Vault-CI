@@ -1,0 +1,17 @@
+{
+  // Watchlink relay: dedicated Worker + SQLite-backed Durable Object namespace.
+  // No account id or token here: deploy credentials live only in the local
+  // wrangler login or CI secrets.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "watchlink-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // Privacy: no persistent Workers Logs / observability ingestion.
+  "observability": { "enabled": false, "logs": { "enabled": false } },
+  "durable_objects": {
+    "bindings": [{ "name": "MAILBOX", "class_name": "MailboxObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MailboxObject"] }]
+}

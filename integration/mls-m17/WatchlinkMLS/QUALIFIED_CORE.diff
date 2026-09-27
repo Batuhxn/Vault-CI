@@ -1,0 +1,143 @@
+--- qualified/m15/MLSQualification/Model.swift
++++ production/Sources/WatchlinkMLS/Model.swift
+@@ -2,7 +2,9 @@
+ import Foundation
+ import MLSBridge
+ 
+-// Qualification-only Swift port of the M1.4 Linux model. Not production code.
++// M1.4/M1.5-qualified Swift port of the M1.4 Linux model, reused by the
++// production engine (M1.6). Changes against the qualified source are pinned
++// in QUALIFIED_CORE.diff; any other change requires requalification.
+ // MLSBridge exports its own `Error` type, so conformances name `Swift.Error`.
+ 
+ /// Local state unavailable, or an operation could not be proven read-only.
+--- qualified/m15/MLSQualification/Device.swift
++++ production/Sources/WatchlinkMLS/Device.swift
+@@ -10,7 +10,7 @@
+     public let name: String
+     public let service: String
+     public let directory: URL
+-    public let relay: Relay
++    public let relay: any RelaySequencer
+     public let store: QualificationStore
+     public private(set) var client: Client?
+     public internal(set) var group: Group?
+@@ -20,7 +20,7 @@
+     public var document: StateDocument { store.view }
+     var identityService: String { service + ".identity" }
+ 
+-    public init(name: String, service: String, directory: URL, relay: Relay, clock: @escaping () -> Int64) {
++    public init(name: String, service: String, directory: URL, relay: any RelaySequencer, clock: @escaping () -> Int64) {
+         self.name = name
+         self.service = service
+         self.directory = directory
+@@ -30,7 +30,7 @@
+ 
+     // MARK: setup, open, wipe
+ 
+-    public static func setup(name: String, service: String, directory: URL, relay: Relay,
++    public static func setup(name: String, service: String, directory: URL, relay: any RelaySequencer,
+                              clock: @escaping () -> Int64) throws -> Device {
+         let device = Device(name: name, service: service, directory: directory, relay: relay, clock: clock)
+         let keypair = try generateSignatureKeypair(cipherSuite: suite)
+@@ -373,8 +373,9 @@
+         }
+     }
+ 
+-    /// Publishes persisted non-commit outbound bytes, then drops them.
+-    func releaseOutbound() throws {
++    /// Publishes persisted non-commit outbound bytes, then drops them. Safe to
++    /// repeat after any failure: the exact persisted bytes are re-posted.
++    public func releaseOutbound() throws {
+         guard let conversation = document.conversation else { return }
+         let pending = document.outbound.filter { $0.kind != "commit" }
+         guard !pending.isEmpty else { return }
+@@ -395,15 +396,19 @@
+         guard document.pendingCommit == nil else {
+             throw Rejected(reason: "no application messages while a commit is unresolved")
+         }
++        // M1.7: the exact ciphertext is staged in the same transaction as the
++        // MLS state it depends on, so every crash point after the state
++        // advances leaves it recoverable; it is released only once committed.
+         let wire = try transact {
+             let group = try liveGroup()
+             let wire = try group.encryptApplicationMessage(message: plaintext).toBytes()
+             try group.writeToStorage()
++            try store.stage { document in
++                document.outbound.append(Outbound(kind: "application", base: group.currentEpoch(), data: wire))
++            }
+             return wire
+         }
+-        _ = try relay.post(document.conversation!, kind: "application", base: group?.currentEpoch(),
+-                           data: wire, sender: name)
+-        store.faults.observer?("outbound-released")
++        try releaseOutbound()
+         return wire
+     }
+ 
+--- qualified/m14-tests/Harness.swift
++++ production/Tests/QualifiedSuite/Harness.swift
+@@ -1,6 +1,6 @@
+ import Foundation
+ import MLSBridge
+-@testable import MLSQualification
++@testable import WatchlinkMLS
+ import ProtectedStateStore
+ import XCTest
+ 
+@@ -31,7 +31,7 @@
+     }
+ 
+     /// Destroys all live objects and recreates the device from durable state only.
+-    func reopen(_ device: Device, relay: Relay? = nil) throws -> Device {
++    func reopen(_ device: Device, relay: (any RelaySequencer)? = nil) throws -> Device {
+         let fresh = Device(name: device.name, service: device.service, directory: device.directory,
+                            relay: relay ?? device.relay, clock: clock)
+         try fresh.open()
+--- qualified/m14-tests/LifecycleTests.swift
++++ production/Tests/QualifiedSuite/LifecycleTests.swift
+@@ -1,6 +1,6 @@
+ import Foundation
+ import MLSBridge
+-@testable import MLSQualification
++@testable import WatchlinkMLS
+ import XCTest
+ 
+ /// M1.4A lifecycle qualification through the generated Swift bindings.
+@@ -212,7 +212,7 @@
+         XCTAssertEqual(try rules.post(id, kind: "commit", base: 0, data: Data("x".utf8), sender: "a"), .accepted(1))
+         XCTAssertEqual(try rules.post(id, kind: "commit", base: 0, data: Data("y".utf8), sender: "b"), .stale(1))
+         XCTAssertEqual(try rules.post(id, kind: "commit", base: 5, data: Data("z".utf8), sender: "b"), .reject)
+-        rules.retire(id)
++        try rules.retire(id)
+         XCTAssertEqual(try rules.post(id, kind: "commit", base: 1, data: Data("z".utf8), sender: "b"), .reject)
+ 
+         let relay = Relay()
+--- qualified/m14-tests/TrustTests.swift
++++ production/Tests/QualifiedSuite/TrustTests.swift
+@@ -1,6 +1,6 @@
+ import Foundation
+ import MLSBridge
+-@testable import MLSQualification
++@testable import WatchlinkMLS
+ import Security
+ import XCTest
+ 
+@@ -79,7 +79,7 @@
+         try a.scanResponder(b.scanInitiator(a.startPairing()))
+         let conversation = a.document.conversation!
+         let entry = relay.fetch(conversation, recipient: "alice", after: 0)[0]
+-        relay.substitute(conversation, seq: entry.seq,  // malicious relay: same BasicCredential, other key
++        try relay.substitute(conversation, seq: entry.seq,  // malicious relay: same BasicCredential, other key
+                          data: try h.rawClient("bob").generateKeyPackageMessage().toBytes())
+         XCTAssertThrows(Violation.self, try a.addPeer())
+         XCTAssertEqual(a.document.security, .identityChanged)
+@@ -147,7 +147,7 @@
+         XCTAssertThrows(Closed.self, try h.reopen(b))
+         let (a2, b2) = try h.pair(relay)
+         XCTAssertNotEqual(a2.document.conversation, oldConversation, "fresh conversation_id")
+-        relay.retire(oldConversation)
++        try relay.retire(oldConversation)
+         XCTAssertThrows(Rejected.self, try b2.acceptWelcome(oldWelcome))
+         XCTAssertThrows(Rejected.self, try b2.receive(application(oldConversation, oldWire, seq: 1_000_000)))
+         XCTAssertEqual(try relay.post(oldConversation, kind: "application", base: 1, data: oldWire, sender: "alice"),

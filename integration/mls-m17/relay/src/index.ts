@@ -1,5 +1,5 @@
 // Watchlink relay Worker: HTTPS front door + one SQLite-backed Durable Object
-// per opaque conversation id. No logging: nothing here writes to console.
+// per opaque conversation id. No logging: nothing here emits log output.
 
 import { DurableObject } from "cloudflare:workers";
 import { MAX_DATA_BYTES, Mailbox, type Result, type Slot } from "./mailbox.ts";

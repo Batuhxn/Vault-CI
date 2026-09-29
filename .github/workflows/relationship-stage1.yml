@@ -1,0 +1,165 @@
+name: Relationship Stage 1 compile/test
+
+# Isolated, unsigned compile/test of feature/relationship-app on the proven M1.7
+# environment. No signing, no IPA, no upload, no relay deploy.
+on:
+  push:
+    branches:
+      - integration/relationship-stage1-20260930
+
+permissions:
+  contents: read
+
+jobs:
+  m17:
+    runs-on: macos-26
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: integration/mls-m17
+    env:
+      BUNDLE_ID: com.batuhxn.watchlink
+      EXPECTED_PROFILE_NAME: Watchlink Ad Hoc
+      BUILD_NUMBER: ${{ github.run_number }}
+      E2E_MARKER: M17-E2E-RELAY-MARKER-8b41
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Pinned relationship to the qualified MLS core
+        run: python3 WatchlinkMLS/check-qualified-core.py qualified/m15/swift/Sources qualified/m14-tests
+      - name: Logging guards (Swift and relay)
+        run: |
+          python3 scripts/check-no-plaintext-logging.py --self-test
+          python3 scripts/check-no-plaintext-logging.py Sources/Vault WatchlinkMLS/Sources WatchlinkMLS/Tests Tests
+          if grep -rnE '\bconsole\.' relay/src; then echo '::error::relay must not log'; exit 1; fi
+          grep -q '"observability": { "enabled": false' relay/wrangler.jsonc
+      - name: Relay unit tests, typecheck and HTTP contract against local workerd
+        working-directory: integration/mls-m17/relay
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npx tsc --noEmit
+          node --test test/mailbox.test.ts
+          npx wrangler dev --local --port 8787 --ip 127.0.0.1 --persist-to "$RUNNER_TEMP/relay-state" \
+            > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/wrangler.pid"
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8787/ && break; sleep 1; done
+          RELAY_URL=http://127.0.0.1:8787 node --test test/http.e2e.ts
+      - name: Select Xcode 26.3
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.3.app
+          test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
+      - name: Install Rust and iOS targets
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add --toolchain 1.98.1 aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - name: Build the MLS bridge with the unchanged M1.5 recipe
+        run: bash WatchlinkMLS/build-bridge.sh "$PWD/qualified/m15"
+      - name: Generate the production project
+        run: |
+          for tool in xcodegen age; do brew list "$tool" >/dev/null 2>&1 || brew install "$tool"; done
+          xcodegen generate --spec project.yml
+      - name: Run production, transport, E2E and qualified-core XCTest
+        env:
+          TEST_RUNNER_WATCHLINK_RELAY_URL: http://127.0.0.1:8787
+        run: |
+          set -euo pipefail
+          sdk="$(xcrun --sdk iphonesimulator --show-sdk-version)"
+          xcrun simctl list runtimes available -j > "$RUNNER_TEMP/runtimes.json"
+          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
+          read -r runtime_id runtime_version udid device_type < <(
+            python3 qualified/m15/pick-simulator.py "$sdk" "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
+          if [ "$udid" = '-' ]; then udid="$(xcrun simctl create Watchlink-M17-CI "$device_type" "$runtime_id")"; fi
+          echo "Using iOS Simulator $runtime_version"
+          run_suite() {  # $1 = -only-testing target, $2 = log name
+            log="$RUNNER_TEMP/$2.log"
+            set +e
+            xcodebuild test -project Vault.xcodeproj -scheme Vault-App -only-testing:"$1" \
+              -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$RUNNER_TEMP/M17TestDerivedData" \
+              2>&1 | tee "$log"
+            status="${PIPESTATUS[0]}"
+            set -e
+            test "$status" -eq 0 || { echo "::error::$1 xcodebuild exit $status"; exit 1; }
+            if grep -qiE 'tests? skipped|Test Case .* skipped' "$log"; then echo "::error::$1 has skipped tests"; exit 1; fi
+            python3 qualified/m15/check-xctest-log.py "$log"
+            summary="$(grep -E 'Executed [0-9]+ tests?, with' "$log" | tail -n 1)"
+            echo "$1: $summary"
+            printf '%s' "$summary" | grep -Eq "with 0 failures" || { echo "::error::$1 failures"; exit 1; }
+            if grep -q '\[relay\]' "$log"; then echo "::error::a real RelayClient was active"; exit 1; fi
+            if grep -q "$E2E_MARKER" "$log"; then echo "::error::plaintext marker in test output"; exit 1; fi
+          }
+          run_suite Vault-AppTests Vault-AppTests
+          run_suite Vault-AppTests/RelationshipTests RelationshipTests
+          # Discovery proof: all 10 Stage 1 relationship tests ran and passed.
+          passed="$(grep -cE "Test Case '-\[Vault_AppTests\.RelationshipTests test[A-Za-z]+\]' passed" "$RUNNER_TEMP/RelationshipTests.log" || true)"
+          echo "RelationshipTests passed: $passed"
+          test "$passed" -eq 10 || { echo "::error::expected 10 RelationshipTests to pass, saw $passed"; exit 1; }
+          grep -E "Test Case '-\[Vault_AppTests\.RelationshipTests" "$RUNNER_TEMP/RelationshipTests.log" | grep passed
+          run_suite WatchlinkMLS-QualifiedTests WatchlinkMLS-QualifiedTests
+      - name: Relay storage and logs never contain the E2E plaintext marker
+        run: |
+          set -euo pipefail
+          kill "$(cat "$RUNNER_TEMP/wrangler.pid")" || true
+          test -d "$RUNNER_TEMP/relay-state"
+          files="$(find "$RUNNER_TEMP/relay-state" -type f | wc -l | tr -d ' ')"
+          test "$files" -gt 0
+          b64="$(printf '%s' "$E2E_MARKER" | base64)"
+          for needle in "$E2E_MARKER" "$b64" "${b64%%=*}"; do
+            if grep -rqaF "$needle" "$RUNNER_TEMP/relay-state" "$RUNNER_TEMP/wrangler.log"; then
+              echo "::error::relay representation contains the plaintext marker"; exit 1
+            fi
+          done
+          echo "Relay storage ($files files) and relay log: no plaintext marker: PASS"
+      - name: Debug simulator build of Vault-App
+        run: |
+          xcodebuild build -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/M17DebugDerivedData" CODE_SIGNING_ALLOWED=NO
+          grep -rqa 11RelayClientC "$RUNNER_TEMP/M17DebugDerivedData/Build/Products/Debug-iphonesimulator/Vault-App.app"
+      - name: Production Release device build and binary gates
+        run: |
+          set -euo pipefail
+          xcodebuild build -project Vault.xcodeproj -scheme Vault-App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/M17ReleaseDerivedData" CODE_SIGNING_ALLOWED=NO
+          app="$RUNNER_TEMP/M17ReleaseDerivedData/Build/Products/Release-iphoneos/Vault-App.app"
+          binary="$app/Vault-App"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist" 2>/dev/null || true; }
+          test "$(pb CFBundleIdentifier)" = com.batuhxn.watchlink
+          test -z "$(pb WatchlinkRelayURL)" || { echo '::error::relay URL baked into the default build'; exit 1; }
+          test -n "$(pb NSCameraUsageDescription)"
+          ! /usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity' "$app/Info.plist" >/dev/null 2>&1 \
+            || { echo '::error::ATS exception in Vault-App'; exit 1; }
+          test ! -e "$app/PlugIns"
+          xcrun otool -L "$binary" | tee "$RUNNER_TEMP/m17-linked.txt"
+          if grep -E 'lib(crypto|ssl)\.' "$RUNNER_TEMP/m17-linked.txt"; then echo '::error::OpenSSL dylib'; exit 1; fi
+          xcrun nm -gU "$binary" > "$RUNNER_TEMP/m17-symbols.txt"
+          grep -q _uniffi_mls_rs_uniffi_ "$RUNNER_TEMP/m17-symbols.txt"
+          grep -q init_callback_vtable_keypackagestorage "$RUNNER_TEMP/m17-symbols.txt"
+          strings -a "$binary" > "$RUNNER_TEMP/m17-strings.txt"
+          for required in MLSCryptoEngine TransportWorker HTTPRelayAPI; do
+            grep -q "$required" "$RUNNER_TEMP/m17-strings.txt" || { echo "::error::$required missing"; exit 1; }
+          done
+          for legacy in 11RelayClientC 9ChatStoreC 18RelayConfigurationV 17RelayFrameDecoderV 13MessageBubbleV \
+                        11ChatMessageV '\[relay\]' '192\.168\.' DiagnosticsView m17.delivery.paused; do
+            if grep -q "$legacy" "$RUNNER_TEMP/m17-strings.txt" "$RUNNER_TEMP/m17-symbols.txt"; then
+              echo "::error::'$legacy' present in production Release"; exit 1
+            fi
+          done
+          echo 'Production Release: static MLS + P1, no OpenSSL dylib, no legacy plaintext route, no diagnostics, no ATS exception: PASS'
+      - name: Qualification Release compile (diagnostics present only here)
+        run: |
+          set -euo pipefail
+          xcodebuild build -project Vault.xcodeproj -scheme Vault-App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/M17QualDerivedData" CODE_SIGNING_ALLOWED=NO \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS=WATCHLINK_QUALIFICATION WATCHLINK_RELAY_URL=https://relay.invalid
+          app="$RUNNER_TEMP/M17QualDerivedData/Build/Products/Release-iphoneos/Vault-App.app"
+          strings -a "$app/Vault-App" > "$RUNNER_TEMP/m17-qual-strings.txt"
+          grep -q DiagnosticsView "$RUNNER_TEMP/m17-qual-strings.txt"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :WatchlinkRelayURL' "$app/Info.plist")" = https://relay.invalid
+          if grep -qE '11RelayClientC|9ChatStoreC' "$RUNNER_TEMP/m17-qual-strings.txt"; then exit 1; fi
+          echo 'Qualification Release: diagnostics compiled in, legacy demo absent: PASS'

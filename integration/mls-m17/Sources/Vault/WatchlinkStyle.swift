@@ -13,6 +13,54 @@ enum WatchlinkStyle {
     static let away = Color(light: 0xA98A55, dark: 0xC9A56B)
     static let danger = Color(light: 0xA4493D, dark: 0xE08A7C)
     static let hairline = Color.primary.opacity(0.10)
+
+    /// Spacing scale; layouts use these instead of literals.
+    enum Space {
+        static let xs: CGFloat = 4
+        static let s: CGFloat = 8
+        static let m: CGFloat = 12
+        static let l: CGFloat = 16
+        static let xl: CGFloat = 24
+        static let xxl: CGFloat = 32
+    }
+
+    enum Radius {
+        static let small: CGFloat = 6
+        static let control: CGFloat = 14
+        static let card: CGFloat = 18
+        static let sheet: CGFloat = 20
+    }
+
+    /// Native text styles, so Dynamic Type scales everything. Default sizes
+    /// match the existing literals (28 / 17 / 15 / 13 / 12).
+    enum Typography {
+        static let title = Font.title.weight(.semibold)
+        static let heading = Font.headline
+        static let body = Font.body
+        static let secondary = Font.subheadline
+        static let footnote = Font.footnote
+        static let caption = Font.caption
+    }
+
+    /// Restrained motion. Callers pass `accessibilityReduceMotion`; reduced
+    /// motion gets no animation rather than a smaller one.
+    enum Motion {
+        static func standard(_ reduceMotion: Bool) -> Animation? {
+            reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)
+        }
+        static func gentle(_ reduceMotion: Bool) -> Animation? {
+            reduceMotion ? nil : .easeInOut(duration: 0.6)
+        }
+    }
+}
+
+extension View {
+    /// The one soft card surface. Used only for things that are waiting, never as permanent dashboard tiles.
+    func watchlinkSurface() -> some View {
+        padding(WatchlinkStyle.Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(WatchlinkStyle.surface, in: RoundedRectangle(cornerRadius: WatchlinkStyle.Radius.card))
+    }
 }
 
 private extension Color {

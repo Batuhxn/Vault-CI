@@ -21,6 +21,9 @@ final class MLSCryptoEngine: CryptoEngine {
     private var failure: SecurityState?
     /// Count-only check that no application plaintext appears in its own wire bytes.
     private(set) var wireChecks = (passed: 0, failed: 0)
+    #if WATCHLINK_QUALIFICATION
+    let adversary = SecurityAdversary()
+    #endif
 
     init(service: String = MLSCryptoEngine.productionService,
          directory: URL = MLSCryptoEngine.defaultDirectory,
@@ -52,6 +55,9 @@ final class MLSCryptoEngine: CryptoEngine {
                 failure = Device.installState(service: service, directory: directory) == .locked ? .unavailable : .error
             }
         }
+        #if WATCHLINK_QUALIFICATION
+        adversary.scopeTo(conversation: device?.document.conversation, identity: device?.ownPin ?? Data())
+        #endif
     }
 
     var securityState: SecurityState {
@@ -141,8 +147,21 @@ final class MLSCryptoEngine: CryptoEngine {
                 try device.acceptWelcome(envelope)  // only valid while joinPending
                 return nil
             }
-            return try device.receive(envelope).map { String(decoding: $0, as: UTF8.self) }
+            #if WATCHLINK_QUALIFICATION
+            let priorSeq = device.document.lastSeq
+            #endif
+            let plaintext = try device.receive(envelope).map { String(decoding: $0, as: UTF8.self) }
+            #if WATCHLINK_QUALIFICATION
+            if envelope.kind == "application", plaintext != nil { adversary.capture(envelope, identity: device.ownPin) }
+            if envelope.kind == "commit", device.document.lastSeq > priorSeq {
+                adversary.capture(envelope, identity: device.ownPin)
+            }
+            #endif
+            return plaintext
         } catch {
+            #if WATCHLINK_QUALIFICATION
+            if device.document.security != .ok { adversary.clear() }
+            #endif
             throw SecurityFailure.rejected
         }
     }
@@ -238,6 +257,9 @@ final class MLSCryptoEngine: CryptoEngine {
     }
 
     func resetSecurity() throws {
+        #if WATCHLINK_QUALIFICATION
+        adversary.clear()
+        #endif
         // Qualified wipe order: anchor (crypto-shred) first, then identity, then state.
         (device ?? Device(name: "", service: service, directory: directory, relay: transport, clock: clock)).wipe()
         restore()
@@ -256,6 +278,9 @@ final class MLSCryptoEngine: CryptoEngine {
         do {
             let created = try Device.create(service: service, directory: directory, relay: transport, clock: clock)
             device = created
+            #if WATCHLINK_QUALIFICATION
+            adversary.scopeTo(conversation: created.document.conversation, identity: created.ownPin)
+            #endif
             return created
         } catch {
             restore()  // leftovers from a partial create fail closed

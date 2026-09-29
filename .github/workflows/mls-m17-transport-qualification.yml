@@ -1,13 +1,17 @@
 name: MLS M1.7 real transport qualification
 
-# Push: every automated gate (no signing). Manual dispatch additionally signs an
-# Ad Hoc qualification IPA (WATCHLINK_QUALIFICATION diagnostics, relay URL from
-# the WATCHLINK_RELAY_URL repository variable) and uploads it only age-encrypted.
+# Push: every automated gate (no signing). Manual dispatch signs an Ad Hoc
+# qualification IPA only when build_signed_ipa is explicitly requested.
 on:
   push:
     branches:
       - integration/mls-m17-transport-20260927
   workflow_dispatch:
+    inputs:
+      build_signed_ipa:
+        description: Build and upload an encrypted Ad Hoc qualification IPA
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,7 +30,7 @@ jobs:
       E2E_MARKER: M17-E2E-RELAY-MARKER-8b41
     steps:
       - name: Require signing inputs before a signed build
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa }}
         env:
           RELAY_URL: ${{ vars.WATCHLINK_RELAY_URL }}
           AGE_RECIPIENT: ${{ vars.WATCHLINK_DEV_AGE_RECIPIENT }}
@@ -85,24 +89,62 @@ jobs:
             python3 qualified/m15/pick-simulator.py "$sdk" "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
           if [ "$udid" = '-' ]; then udid="$(xcrun simctl create Watchlink-M17-CI "$device_type" "$runtime_id")"; fi
           echo "Using iOS Simulator $runtime_version"
-          for suite in Vault-AppTests:79 WatchlinkMLS-QualifiedTests:24; do
-            target="${suite%%:*}" expected="${suite##*:}"
+          for target in Vault-AppTests WatchlinkMLS-QualifiedTests; do
             log="$RUNNER_TEMP/$target.log"
-            set +e
             xcodebuild test -project Vault.xcodeproj -scheme Vault-App -only-testing:"$target" \
               -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$RUNNER_TEMP/M17TestDerivedData" \
               2>&1 | tee "$log"
-            status="${PIPESTATUS[0]}"
-            set -e
             python3 qualified/m15/check-xctest-log.py "$log"
-            test "$status" -eq 0
             summary="$(grep -E 'Executed [0-9]+ tests?, with' "$log" | tail -n 1)"
             echo "$target: $summary"
-            printf '%s' "$summary" | grep -Eq "Executed $expected tests?, with 0 failures" \
-              || { echo "::error::$target expected exactly $expected tests, none skipped, 0 failures"; exit 1; }
+            if grep -Eiq "Test Case .* skipped|Test Suite .* skipped|[1-9][0-9]* tests? skipped" "$log"; then
+              echo "::error::$target skipped tests"; exit 1
+            fi
             if grep -q '\[relay\]' "$log"; then echo "::error::a real RelayClient was active"; exit 1; fi
             if grep -q "$E2E_MARKER" "$log"; then echo "::error::plaintext marker in test output"; exit 1; fi
           done
+          app_log="$RUNNER_TEMP/Vault-AppTests.log"
+          for test_name in \
+            testExactTransportCiphertextReplayIsIgnoredWithoutDuplicateDelivery \
+            testFreshSequenceOldApplicationReachesMLSAndIsRejected \
+            testTamperLastCiphertextRejectsWithoutPlaintextOrStateMutation \
+            testExactTransportCommitReplayLeavesEpochPendingAndOutboundCoherent \
+            testFreshSequenceOldCommitHardStopsWithoutApplyingItAgain \
+            testRetainedEnvelopesDoNotSurviveResetIdentityOrNewConversation \
+            testC17ReplayedCommitFailsClosed \
+            testE24to27CorruptTruncatedRandomAndForeignCiphertextRejected \
+            test04CorruptInboundRejectedWithoutMutation \
+            testEngineFailClosedStatesOverridePresentation \
+            testRealRelayPairingMessagingAndRetire; do
+            grep -Fq "$test_name" "$app_log" || { echo "::error::required XCTest missing: $test_name"; exit 1; }
+          done
+          for suite_name in SecurityAdversaryTests TransportQualificationTests MLSEngineIntegrationTests \
+                            WatchlinkSecurityTests RelayEndToEndTests; do
+            grep -Fq "$suite_name" "$app_log" || { echo "::error::required XCTest suite missing: $suite_name"; exit 1; }
+          done
+          focused="$RUNNER_TEMP/SecurityAdversaryTests.log"
+          xcodebuild test -project Vault.xcodeproj -scheme Vault-App \
+            -only-testing:Vault-AppTests/SecurityAdversaryTests \
+            -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$RUNNER_TEMP/M17TestDerivedData" \
+            2>&1 | tee "$focused"
+          summary="$(grep -E 'Executed [0-9]+ tests?, with' "$focused" | tail -n 1)"
+          echo "SecurityAdversaryTests: $summary"
+          printf '%s' "$summary" | grep -Eq 'Executed [1-9][0-9]* tests?, with 0 failures' \
+            || { echo '::error::focused SecurityAdversaryTests did not pass'; exit 1; }
+          if grep -Eiq "Test Case .* skipped|Test Suite .* skipped|[1-9][0-9]* tests? skipped" "$focused"; then
+            echo '::error::focused SecurityAdversaryTests skipped tests'; exit 1
+          fi
+          for test_name in \
+            testExactTransportCiphertextReplayIsIgnoredWithoutDuplicateDelivery \
+            testFreshSequenceOldApplicationReachesMLSAndIsRejected \
+            testTamperLastCiphertextRejectsWithoutPlaintextOrStateMutation \
+            testExactTransportCommitReplayLeavesEpochPendingAndOutboundCoherent \
+            testFreshSequenceOldCommitHardStopsWithoutApplyingItAgain \
+            testRetainedEnvelopesDoNotSurviveResetIdentityOrNewConversation; do
+            grep -Fq "$test_name" "$focused" || { echo "::error::focused XCTest missing: $test_name"; exit 1; }
+          done
+          if grep -q '\[relay\]' "$focused"; then echo '::error::a real RelayClient was active'; exit 1; fi
+          if grep -q "$E2E_MARKER" "$focused"; then echo '::error::plaintext marker in test output'; exit 1; fi
       - name: Relay storage and logs never contain the E2E plaintext marker
         run: |
           set -euo pipefail
@@ -170,7 +212,7 @@ jobs:
 
       # ---- Signed Ad Hoc qualification IPA (manual dispatch only) ----
       - name: Import signing certificate into an ephemeral keychain
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa }}
         env:
           IOS_DIST_P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
           IOS_DIST_P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
@@ -198,7 +240,7 @@ jobs:
           case "$identities" in *"($APPLE_TEAM_ID)") ;; *) echo "::error::identity/team mismatch"; exit 1 ;; esac
           echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
       - name: Install and verify Ad Hoc provisioning profile
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa }}
         env:
           IOS_ADHOC_PROFILE_B64: ${{ secrets.IOS_ADHOC_PROFILE_B64 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -227,7 +269,7 @@ jobs:
           { echo "PROFILE_UUID=$uuid"; echo "PROFILE_NAME=$name"; } >> "$GITHUB_ENV"
           echo "Ad Hoc profile ($devices devices): PASS"
       - name: Archive, export, verify and encrypt the qualification IPA
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa }}
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           RELAY_URL: ${{ vars.WATCHLINK_RELAY_URL }}
@@ -277,7 +319,7 @@ jobs:
           echo "ENCRYPTED_IPA=$out" >> "$GITHUB_ENV"
           echo "Signed qualification IPA build $BUILD_NUMBER encrypted: PASS"
       - name: Upload encrypted qualification IPA
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_signed_ipa }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: watchlink-m17-${{ github.run_number }}

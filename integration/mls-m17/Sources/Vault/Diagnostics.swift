@@ -41,6 +41,13 @@ struct DiagnosticsView: View {
                     }
                     Button("Rotate keys") { rotate() }
                     Button("Inject roster change", role: .destructive) { inject() }
+                    Menu("Adversarial") {
+                        Button("Exact Ciphertext Replay") { attack(.exactApplication) }
+                        Button("Stale Ciphertext Replay") { attack(.staleApplication) }
+                        Button("Tamper Last Ciphertext") { attack(.tamperApplication) }
+                        Button("Exact Commit Replay") { attack(.exactCommit) }
+                        Button("Stale Commit Replay") { attack(.staleCommit) }
+                    }
                 }
             }
             .navigationTitle("M1.7 Diagnostics")
@@ -66,6 +73,18 @@ struct DiagnosticsView: View {
             note = "commit committed; pending relay decision"
         } catch { note = "rotate refused: \(Self.kind(error))" }
         transport?.kick()
+        refresh()
+    }
+
+    private func attack(_ type: SecurityAdversary.Attack) {
+        guard let engine else { note = "no engine"; return }
+        if let outcome = engine.adversary.run(type, engine: engine, store: store) {
+            note = type == .staleCommit && engine.securityState == .error
+                ? "staleCommit: rejected; qualified hard stop, Reset Security required"
+                : "\(type.rawValue): \(outcome.rawValue); send a fresh peer message to confirm recovery"
+        } else {
+            note = "\(type.rawValue): no accepted packet available or session unavailable"
+        }
         refresh()
     }
 
@@ -113,6 +132,7 @@ struct DiagnosticsView: View {
         guard let engine = transport?.worker.engine else { return (lines + ["engine: no transport"]).joined(separator: "\n") }
         lines.append("engine state: \(engine.securityState)")
         lines.append("wire plaintext checks: passed \(engine.wireChecks.passed), failed \(engine.wireChecks.failed)")
+        lines += engine.adversary.summary()
         if let device = engine.device {
             let document = device.store.committed
             let anchor = try? device.store.anchorStore.load()

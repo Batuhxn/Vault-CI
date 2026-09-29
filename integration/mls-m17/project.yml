@@ -105,6 +105,9 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Watchlink-TestHost.app/Watchlink-TestHost"
         BUNDLE_LOADER: "$(TEST_HOST)"
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "DEBUG WATCHLINK_QUALIFICATION"
 
   # The M1.4 lifecycle + peer-trust suites, rerun against the production
   # WatchlinkMLS module (QUALIFIED_CORE.diff pins the adaptations).

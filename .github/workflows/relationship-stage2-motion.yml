@@ -1,11 +1,11 @@
-name: Relationship Stage 2 compile/test
+name: Relationship Stage 2 motion compile/test
 
-# Isolated, unsigned Stage 2 compile/test of feature/relationship-app on the proven M1.7
+# Isolated, unsigned Stage 2 motion-redesign compile/test of feature/relationship-app on the proven M1.7
 # environment. No signing, no IPA, no upload, no relay deploy.
 on:
   push:
     branches:
-      - integration/relationship-stage2-20260930
+      - integration/relationship-stage2-motion-20260930
 
 permissions:
   contents: read
@@ -39,20 +39,23 @@ jobs:
       - name: Relationship product boundary (static)
         run: |
           set -euo pipefail
-          product="Sources/Vault/RelationshipShell.swift Sources/Vault/HomeView.swift Sources/Vault/ChatScreen.swift Sources/Vault/RelationshipModels.swift Sources/Vault/RelationshipStore.swift"
-          # Code lines only (comments excluded). Product layer never reaches the engine, transport, keychain or crypto, and never logs.
-          if grep -nE 'MLSCryptoEngine|RelayClient|TransportWorker|HTTPRelayAPI|LiveTransport|\bengine\b|\.hooks|CryptoKit|SecItem|Keychain|\bprint\(|os_log|Logger\(' $product | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; then
-            echo "::error::product layer reaches security infrastructure"; exit 1; fi
-          # Stage 2 views add no storage of their own (persistence stays in RelationshipStore).
-          if grep -nE 'FileManager|UserDefaults|AppStorage|write\(to' Sources/Vault/RelationshipShell.swift Sources/Vault/HomeView.swift Sources/Vault/ChatScreen.swift | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; then
-            echo "::error::Stage 2 view persists data"; exit 1; fi
-          # Chat copy never claims peer delivery or read receipts.
-          if grep -nE '"[^"]*(Delivered|delivered|Read receipt|Seen)[^"]*"' Sources/Vault/ChatScreen.swift Sources/Vault/HomeView.swift Sources/Vault/RelationshipShell.swift | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; then
-            echo "::error::delivery/read claim in product copy"; exit 1; fi
+          views="Sources/Vault/RelationshipShell.swift Sources/Vault/HomeView.swift Sources/Vault/ChatScreen.swift Sources/Vault/UsView.swift Sources/Vault/PrivateSpacePreview.swift Sources/Vault/RelationshipComponents.swift Sources/Vault/RelationshipMotion.swift"
+          product="$views Sources/Vault/RelationshipModels.swift Sources/Vault/RelationshipStore.swift"
+          for f in $product; do test -f "$f" || { echo "::error::$f missing from the gate's file list"; exit 1; }; done
+          code() { grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; }  # code lines only; comments may name what is forbidden
+          # Product layer never reaches the engine, transport, keychain or crypto, and never logs.
+          if grep -nE 'MLSCryptoEngine|RelayClient|TransportWorker|HTTPRelayAPI|LiveTransport|\bengine\b|\.hooks|CryptoKit|SecItem|Keychain|\bprint\(|os_log|Logger\(' $product | code; then
+            echo "::error::product layer reaches security infrastructure or logs"; exit 1; fi
+          # Product views add no storage of their own (persistence stays in RelationshipStore).
+          if grep -nE 'FileManager|UserDefaults|AppStorage|SceneStorage|write\(to' $views | code; then
+            echo "::error::product view persists data"; exit 1; fi
+          # Copy never claims peer delivery, read receipts or live presence.
+          if grep -nE '"[^"]*(Delivered|delivered|Read receipt|Seen|Online|Active now|typing)[^"]*"' $views | code; then
+            echo "::error::delivery/read/presence claim in product copy"; exit 1; fi
           # Root diff stays surgical: the shell is entered only from .chats.
           test "$(grep -c 'RelationshipShell(store: store)' Sources/Vault/WatchlinkRootView.swift)" = 1
           grep -q 'case .chats: RelationshipShell(store: store)' Sources/Vault/WatchlinkRootView.swift
-          echo "Relationship product boundary: PASS"
+          echo "Relationship product boundary ($(echo $views | wc -w | tr -d ' ') views + 2 model files): PASS"
       - name: Relay unit tests, typecheck and HTTP contract against local workerd
         working-directory: integration/mls-m17/relay
         run: |
@@ -111,10 +114,10 @@ jobs:
             if grep -q "$E2E_MARKER" "$log"; then echo "::error::plaintext marker in test output"; exit 1; fi
           }
           run_suite Vault-AppTests Vault-AppTests
-          # Focused relationship lane: both suites in one run so the unchanged log
+          # Focused relationship lane: all three suites in one run so the unchanged log
           # validator's >=8 floor applies; discovery is then proven per class.
-          run_suite RelationshipFocused Vault-AppTests/RelationshipTests Vault-AppTests/RelationshipShellTests
-          for pair in RelationshipTests:10 RelationshipShellTests:7; do
+          run_suite RelationshipFocused Vault-AppTests/RelationshipTests Vault-AppTests/RelationshipShellTests Vault-AppTests/RelationshipPresentationTests
+          for pair in RelationshipTests:10 RelationshipShellTests:7 RelationshipPresentationTests:7; do
             class="${pair%%:*}" expected="${pair##*:}"
             passed="$(grep -cE "Test Case '-\[Vault_AppTests\.$class test[A-Za-z]+\]' passed" "$RUNNER_TEMP/RelationshipFocused.log" || true)"
             failed="$(grep -cE "Test Case '-\[Vault_AppTests\.$class test[A-Za-z]+\]' failed" "$RUNNER_TEMP/RelationshipFocused.log" || true)"
@@ -123,6 +126,9 @@ jobs:
               || { echo "::error::expected $expected $class to pass, saw $passed passed / $failed failed"; exit 1; }
             grep -E "Test Case '-\[Vault_AppTests\.$class test" "$RUNNER_TEMP/RelationshipFocused.log" | grep passed
           done
+          focused="$(grep -E 'Executed [0-9]+ tests?, with' "$RUNNER_TEMP/RelationshipFocused.log" | tail -n 1)"
+          printf '%s' "$focused" | grep -Eq "Executed 24 tests?, with 0 failures" \
+            || { echo "::error::focused relationship lane expected 24 tests: $focused"; exit 1; }
           run_suite WatchlinkMLS-QualifiedTests WatchlinkMLS-QualifiedTests
       - name: Relay storage and logs never contain the E2E plaintext marker
         run: |
@@ -175,6 +181,27 @@ jobs:
             fi
           done
           echo 'Production Release: static MLS + P1, no OpenSSL dylib, no legacy plaintext route, no diagnostics, no ATS exception: PASS'
+      - name: Launch screen and device family diagnostic (report only)
+        continue-on-error: true
+        run: |
+          set +e
+          app="$RUNNER_TEMP/M17ReleaseDerivedData/Build/Products/Release-iphoneos/Vault-App.app"
+          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist" 2>/dev/null; }
+          if pb UILaunchScreen >/dev/null; then launch="present"; else launch="ABSENT"; fi
+          if pb UILaunchStoryboardName >/dev/null; then storyboard="present"; else storyboard="absent"; fi
+          families="$(pb UIDeviceFamily | tr -d ' {}' | tr '\n' ' ' | sed -E 's/Array//; s/ +/ /g; s/^ //; s/ $//')"
+          tdf="$(xcodebuild -showBuildSettings -project Vault.xcodeproj -target Vault-App -configuration Release 2>/dev/null \
+                 | sed -n 's/^ *TARGETED_DEVICE_FAMILY = //p' | head -n 1)"
+          case "$tdf" in 1) mode="iPhone-only: iPad runs it in iPhone compatibility mode (letterboxed/scaled)";;
+                         *2*) mode="includes iPad: native on iPad";; *) mode="unknown";; esac
+          {
+            echo "### Launch screen / device family (diagnostic)"
+            echo "- UILaunchScreen in built Info.plist: $launch"
+            echo "- UILaunchStoryboardName: $storyboard"
+            echo "- UIDeviceFamily in built Info.plist: ${families:-none}"
+            echo "- TARGETED_DEVICE_FAMILY (Release): ${tdf:-unknown} ($mode)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 0
       - name: Qualification Release compile (diagnostics present only here)
         run: |
           set -euo pipefail

@@ -13,54 +13,6 @@ enum WatchlinkStyle {
     static let away = Color(light: 0xA98A55, dark: 0xC9A56B)
     static let danger = Color(light: 0xA4493D, dark: 0xE08A7C)
     static let hairline = Color.primary.opacity(0.10)
-
-    /// Spacing scale; layouts use these instead of literals.
-    enum Space {
-        static let xs: CGFloat = 4
-        static let s: CGFloat = 8
-        static let m: CGFloat = 12
-        static let l: CGFloat = 16
-        static let xl: CGFloat = 24
-        static let xxl: CGFloat = 32
-    }
-
-    enum Radius {
-        static let small: CGFloat = 6
-        static let control: CGFloat = 14
-        static let card: CGFloat = 18
-        static let sheet: CGFloat = 20
-    }
-
-    /// Native text styles, so Dynamic Type scales everything. Default sizes
-    /// match the existing literals (28 / 17 / 15 / 13 / 12).
-    enum Typography {
-        static let title = Font.title.weight(.semibold)
-        static let heading = Font.headline
-        static let body = Font.body
-        static let secondary = Font.subheadline
-        static let footnote = Font.footnote
-        static let caption = Font.caption
-    }
-
-    /// Restrained motion. Callers pass `accessibilityReduceMotion`; reduced
-    /// motion gets no animation rather than a smaller one.
-    enum Motion {
-        static func standard(_ reduceMotion: Bool) -> Animation? {
-            reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.9)
-        }
-        static func gentle(_ reduceMotion: Bool) -> Animation? {
-            reduceMotion ? nil : .easeInOut(duration: 0.6)
-        }
-    }
-}
-
-extension View {
-    /// The one soft card surface. Used only for things that are waiting, never as permanent dashboard tiles.
-    func watchlinkSurface() -> some View {
-        padding(WatchlinkStyle.Space.l)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(WatchlinkStyle.surface, in: RoundedRectangle(cornerRadius: WatchlinkStyle.Radius.card))
-    }
 }
 
 private extension Color {
@@ -99,5 +51,67 @@ struct WatchlinkPrimaryButton: View {
             .foregroundStyle(WatchlinkStyle.background)
             .background(WatchlinkStyle.tint, in: RoundedRectangle(cornerRadius: 14))
             .contentShape(Rectangle())
+    }
+}
+
+extension WatchlinkStyle {
+    /// The room palette. Fixed values: the product shell is light-only until a
+    /// dark theme ships, and Private Space uses the night set explicitly.
+    enum Room {
+        static let cream = Color(hex: 0xF5F1E8)      // e0 ground, every screen
+        static let paper = Color(hex: 0xFBF9F4)      // e1 surfaces, incoming bubbles
+        static let linen = Color(hex: 0xEDE7DA)      // sunken, placeholders
+        static let control = Color(hex: 0xECE6D8)    // round controls (moon)
+        static let mine = Color(hex: 0xE3EAE1)       // outgoing bubbles
+        static let mist = Color(hex: 0xE1E8DF)       // partner monogram
+        static let sage = Color(hex: 0x426B57)       // the one live action
+        static let sageDeep = Color(hex: 0x34574A)
+        static let ink = Color(hex: 0x23271F)
+        static let ink2 = Color(hex: 0x585C53)
+        static let ink3 = Color(hex: 0x6B6E65)
+        static let hairline = Color(hex: 0xE3DCCD)
+        static let rule = Color(hex: 0xDDD5C4)
+        static let bar = Color(hex: 0xF1ECE1)
+        static let notice = Color(hex: 0xF3E9D6)
+        static let noticeInk = Color(hex: 0x8A5A22)
+        static let blocking = Color(hex: 0x9B3B2E)
+        static let night = Color(hex: 0x161A17)
+        static let nightMid = Color(hex: 0x1B221E)
+        static let moss = Color(hex: 0x2E4136)
+        static let nightText = Color(hex: 0xF1F2EC)
+        static let nightSecondary = Color(hex: 0xAEB8AF)
+    }
+}
+
+extension View {
+    /// New York display (greetings, Us headline). Scales with Dynamic Type.
+    func wlDisplay() -> some View { modifier(ScaledSerif(size: 44, relativeTo: .largeTitle, tracking: -0.6)) }
+    /// New York title (names, Chat heading).
+    func wlTitle() -> some View { modifier(ScaledSerif(size: 24, relativeTo: .title2)) }
+    /// New York italic whisper (day separators, quiet lines).
+    func wlWhisper(size: CGFloat = 14) -> some View { modifier(ScaledSerif(size: size, relativeTo: .footnote, italic: true)) }
+}
+
+private struct ScaledSerif: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    let tracking: CGFloat
+    let italic: Bool
+
+    init(size: CGFloat, relativeTo style: Font.TextStyle, tracking: CGFloat = 0, italic: Bool = false) {
+        _size = ScaledMetric(wrappedValue: size, relativeTo: style)
+        self.tracking = tracking
+        self.italic = italic
+    }
+
+    func body(content: Content) -> some View {
+        let font = Font.system(size: size, weight: .regular, design: .serif)
+        content.font(italic ? font.italic() : font).tracking(tracking)
+    }
+}
+
+private extension Color {
+    init(hex value: UInt32) {
+        self.init(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255,
+                  blue: Double(value & 255) / 255)
     }
 }

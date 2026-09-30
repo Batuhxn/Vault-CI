@@ -91,36 +91,38 @@ jobs:
             python3 qualified/m15/pick-simulator.py "$sdk" "$RUNNER_TEMP/runtimes.json" "$RUNNER_TEMP/devices.json")
           if [ "$udid" = '-' ]; then udid="$(xcrun simctl create Watchlink-M17-CI "$device_type" "$runtime_id")"; fi
           echo "Using iOS Simulator $runtime_version"
-          run_suite() {  # $1 = -only-testing target, $2 = log name
-            log="$RUNNER_TEMP/$2.log"
+          run_suite() {  # $1 = log name, $2... = -only-testing targets (one xcodebuild run)
+            name="$1"; shift
+            log="$RUNNER_TEMP/$name.log"
+            only=(); for target in "$@"; do only+=(-only-testing:"$target"); done
             set +e
-            xcodebuild test -project Vault.xcodeproj -scheme Vault-App -only-testing:"$1" \
+            xcodebuild test -project Vault.xcodeproj -scheme Vault-App "${only[@]}" \
               -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$RUNNER_TEMP/M17TestDerivedData" \
               2>&1 | tee "$log"
             status="${PIPESTATUS[0]}"
             set -e
-            test "$status" -eq 0 || { echo "::error::$1 xcodebuild exit $status"; exit 1; }
-            if grep -qiE 'tests? skipped|Test Case .* skipped' "$log"; then echo "::error::$1 has skipped tests"; exit 1; fi
+            test "$status" -eq 0 || { echo "::error::$name xcodebuild exit $status"; exit 1; }
+            if grep -qiE 'tests? skipped|Test Case .* skipped' "$log"; then echo "::error::$name has skipped tests"; exit 1; fi
             python3 qualified/m15/check-xctest-log.py "$log"
             summary="$(grep -E 'Executed [0-9]+ tests?, with' "$log" | tail -n 1)"
-            echo "$1: $summary"
-            printf '%s' "$summary" | grep -Eq "with 0 failures" || { echo "::error::$1 failures"; exit 1; }
+            echo "$name: $summary"
+            printf '%s' "$summary" | grep -Eq "with 0 failures" || { echo "::error::$name failures"; exit 1; }
             if grep -q '\[relay\]' "$log"; then echo "::error::a real RelayClient was active"; exit 1; fi
             if grep -q "$E2E_MARKER" "$log"; then echo "::error::plaintext marker in test output"; exit 1; fi
           }
           run_suite Vault-AppTests Vault-AppTests
-          run_suite Vault-AppTests/RelationshipTests RelationshipTests
-          # Discovery proof: all 10 Stage 1 relationship tests ran and passed.
-          passed="$(grep -cE "Test Case '-\[Vault_AppTests\.RelationshipTests test[A-Za-z]+\]' passed" "$RUNNER_TEMP/RelationshipTests.log" || true)"
-          echo "RelationshipTests passed: $passed"
-          test "$passed" -eq 10 || { echo "::error::expected 10 RelationshipTests to pass, saw $passed"; exit 1; }
-          grep -E "Test Case '-\[Vault_AppTests\.RelationshipTests" "$RUNNER_TEMP/RelationshipTests.log" | grep passed
-          run_suite Vault-AppTests/RelationshipShellTests RelationshipShellTests
-          # Discovery proof: all 7 Stage 2 shell tests ran and passed.
-          passed="$(grep -cE "Test Case '-\[Vault_AppTests\.RelationshipShellTests test[A-Za-z]+\]' passed" "$RUNNER_TEMP/RelationshipShellTests.log" || true)"
-          echo "RelationshipShellTests passed: $passed"
-          test "$passed" -eq 7 || { echo "::error::expected 7 RelationshipShellTests to pass, saw $passed"; exit 1; }
-          grep -E "Test Case '-\[Vault_AppTests\.RelationshipShellTests" "$RUNNER_TEMP/RelationshipShellTests.log" | grep passed
+          # Focused relationship lane: both suites in one run so the unchanged log
+          # validator's >=8 floor applies; discovery is then proven per class.
+          run_suite RelationshipFocused Vault-AppTests/RelationshipTests Vault-AppTests/RelationshipShellTests
+          for pair in RelationshipTests:10 RelationshipShellTests:7; do
+            class="${pair%%:*}" expected="${pair##*:}"
+            passed="$(grep -cE "Test Case '-\[Vault_AppTests\.$class test[A-Za-z]+\]' passed" "$RUNNER_TEMP/RelationshipFocused.log" || true)"
+            failed="$(grep -cE "Test Case '-\[Vault_AppTests\.$class test[A-Za-z]+\]' failed" "$RUNNER_TEMP/RelationshipFocused.log" || true)"
+            echo "$class passed: $passed, failed: $failed"
+            test "$passed" -eq "$expected" && test "$failed" -eq 0 \
+              || { echo "::error::expected $expected $class to pass, saw $passed passed / $failed failed"; exit 1; }
+            grep -E "Test Case '-\[Vault_AppTests\.$class test" "$RUNNER_TEMP/RelationshipFocused.log" | grep passed
+          done
           run_suite WatchlinkMLS-QualifiedTests WatchlinkMLS-QualifiedTests
       - name: Relay storage and logs never contain the E2E plaintext marker
         run: |

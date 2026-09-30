@@ -1,11 +1,11 @@
-name: Relationship Stage 1 compile/test
+name: Relationship Stage 2 compile/test
 
-# Isolated, unsigned compile/test of feature/relationship-app on the proven M1.7
+# Isolated, unsigned Stage 2 compile/test of feature/relationship-app on the proven M1.7
 # environment. No signing, no IPA, no upload, no relay deploy.
 on:
   push:
     branches:
-      - integration/relationship-stage1-20260930
+      - integration/relationship-stage2-20260930
 
 permissions:
   contents: read
@@ -36,6 +36,23 @@ jobs:
           python3 scripts/check-no-plaintext-logging.py Sources/Vault WatchlinkMLS/Sources WatchlinkMLS/Tests Tests
           if grep -rnE '\bconsole\.' relay/src; then echo '::error::relay must not log'; exit 1; fi
           grep -q '"observability": { "enabled": false' relay/wrangler.jsonc
+      - name: Relationship product boundary (static)
+        run: |
+          set -euo pipefail
+          product="Sources/Vault/RelationshipShell.swift Sources/Vault/HomeView.swift Sources/Vault/ChatScreen.swift Sources/Vault/RelationshipModels.swift Sources/Vault/RelationshipStore.swift"
+          # Code lines only (comments excluded). Product layer never reaches the engine, transport, keychain or crypto, and never logs.
+          if grep -nE 'MLSCryptoEngine|RelayClient|TransportWorker|HTTPRelayAPI|LiveTransport|\bengine\b|\.hooks|CryptoKit|SecItem|Keychain|\bprint\(|os_log|Logger\(' $product | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; then
+            echo "::error::product layer reaches security infrastructure"; exit 1; fi
+          # Stage 2 views add no storage of their own (persistence stays in RelationshipStore).
+          if grep -nE 'FileManager|UserDefaults|AppStorage|write\(to' Sources/Vault/RelationshipShell.swift Sources/Vault/HomeView.swift Sources/Vault/ChatScreen.swift | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; then
+            echo "::error::Stage 2 view persists data"; exit 1; fi
+          # Chat copy never claims peer delivery or read receipts.
+          if grep -nE '"[^"]*(Delivered|delivered|Read receipt|Seen)[^"]*"' Sources/Vault/ChatScreen.swift Sources/Vault/HomeView.swift Sources/Vault/RelationshipShell.swift | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//'; then
+            echo "::error::delivery/read claim in product copy"; exit 1; fi
+          # Root diff stays surgical: the shell is entered only from .chats.
+          test "$(grep -c 'RelationshipShell(store: store)' Sources/Vault/WatchlinkRootView.swift)" = 1
+          grep -q 'case .chats: RelationshipShell(store: store)' Sources/Vault/WatchlinkRootView.swift
+          echo "Relationship product boundary: PASS"
       - name: Relay unit tests, typecheck and HTTP contract against local workerd
         working-directory: integration/mls-m17/relay
         run: |
@@ -98,6 +115,12 @@ jobs:
           echo "RelationshipTests passed: $passed"
           test "$passed" -eq 10 || { echo "::error::expected 10 RelationshipTests to pass, saw $passed"; exit 1; }
           grep -E "Test Case '-\[Vault_AppTests\.RelationshipTests" "$RUNNER_TEMP/RelationshipTests.log" | grep passed
+          run_suite Vault-AppTests/RelationshipShellTests RelationshipShellTests
+          # Discovery proof: all 7 Stage 2 shell tests ran and passed.
+          passed="$(grep -cE "Test Case '-\[Vault_AppTests\.RelationshipShellTests test[A-Za-z]+\]' passed" "$RUNNER_TEMP/RelationshipShellTests.log" || true)"
+          echo "RelationshipShellTests passed: $passed"
+          test "$passed" -eq 7 || { echo "::error::expected 7 RelationshipShellTests to pass, saw $passed"; exit 1; }
+          grep -E "Test Case '-\[Vault_AppTests\.RelationshipShellTests" "$RUNNER_TEMP/RelationshipShellTests.log" | grep passed
           run_suite WatchlinkMLS-QualifiedTests WatchlinkMLS-QualifiedTests
       - name: Relay storage and logs never contain the E2E plaintext marker
         run: |

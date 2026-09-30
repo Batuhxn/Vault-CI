@@ -20,7 +20,7 @@ struct WatchlinkRootView: View {
             case .welcome: welcome
             case .pairing: pairing
             case .establishing: statusPage("Verifying secure link", "Keep both devices open.", symbol: "arrow.triangle.2.circlepath")
-            case .chats: ChatsHomeView(store: store)
+            case .chats: RelationshipShell(store: store)
             case .identityReview: identityReview
             case .unavailable: unavailable
             }

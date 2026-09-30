@@ -286,7 +286,7 @@ struct MessageRunView: View {
                     .accessibilityAddTraits(.isHeader)
             }
             ForEach(Array(run.messages.enumerated()), id: \.element.id) { index, message in
-                MessageBubble(message: message, position: run.position(of: index))
+                ConversationBubble(message: message, position: run.position(of: index))
                     .wlTransition(message.delivery == .failed ? .opacity : .letter(mine: message.isMine), reduceMotion: reduceMotion)
             }
             Text(run.footer)
@@ -303,7 +303,7 @@ struct MessageRunView: View {
 /// No tails, no ticks. Mine and theirs differ by side and tone; the corner that
 /// meets a neighbour in the same run softens, so appending re-shapes the previous
 /// bubble on the same spring.
-struct MessageBubble: View {
+struct ConversationBubble: View {
     let message: LocalMessage
     let position: MessageRun.Position
 

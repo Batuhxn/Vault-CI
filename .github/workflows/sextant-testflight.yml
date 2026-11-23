@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -d /Applications/Xcode*.app || true
-          xcode="$( (ls -d /Applications/Xcode_27*.app 2>/dev/null || true) | grep -viE 'beta|rc' | sort -V | tail -n 1)"
+          xcode="$( (ls -d /Applications/Xcode_27*.app 2>/dev/null || true) | { grep -viE 'beta|rc' || true; } | sort -V | tail -n 1)"
           [ -n "$xcode" ] || xcode="$(ls -d /Applications/Xcode_26*.app | grep -viE 'beta|rc' | sort -V | tail -n 1)"
           [ -n "$xcode" ] || { echo "::error::no Xcode 26/27 on this runner"; exit 1; }
           sudo xcode-select -s "$xcode"

@@ -34,11 +34,13 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Select the newest Xcode 26
+      - name: Select the newest stable Xcode (27 preferred, 26 fallback)
         run: |
           set -euo pipefail
-          xcode="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
-          [ -n "$xcode" ] || { echo "::error::no Xcode 26 on this runner"; ls -d /Applications/Xcode*.app; exit 1; }
+          ls -d /Applications/Xcode*.app || true
+          xcode="$( (ls -d /Applications/Xcode_27*.app 2>/dev/null || true) | grep -viE 'beta|rc' | sort -V | tail -n 1)"
+          [ -n "$xcode" ] || xcode="$(ls -d /Applications/Xcode_26*.app | grep -viE 'beta|rc' | sort -V | tail -n 1)"
+          [ -n "$xcode" ] || { echo "::error::no Xcode 26/27 on this runner"; exit 1; }
           sudo xcode-select -s "$xcode"
           xcodebuild -version
 

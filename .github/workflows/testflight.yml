@@ -42,6 +42,19 @@ jobs:
           sudo xcode-select -s "$xcode_path"
           test "$(xcodebuild -version | sed -n '1s/^Xcode //p')" = 26.3
 
+      - name: Write Firebase config from secret
+        env:
+          GOOGLE_SERVICE_INFO_PLIST_B64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_B64 }}
+        run: |
+          set -euo pipefail
+          [ -n "${GOOGLE_SERVICE_INFO_PLIST_B64:-}" ] || { echo "::error::secret GOOGLE_SERVICE_INFO_PLIST_B64 is not set"; exit 1; }
+          umask 077
+          plist=Sources/Vault/GoogleService-Info.plist
+          printf '%s' "$GOOGLE_SERVICE_INFO_PLIST_B64" | base64 --decode > "$plist"
+          plutil -lint "$plist" >/dev/null
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :BUNDLE_ID' "$plist")" = "$BUNDLE_ID" ] \
+            || { echo "::error::Firebase config BUNDLE_ID does not match $BUNDLE_ID"; exit 1; }
+
       - name: Install XcodeGen and generate the production project
         run: |
           set -euo pipefail
@@ -246,6 +259,9 @@ jobs:
           codesign -d --entitlements - --xml "$app" > "$entitlements" 2>/dev/null
           [ "$(/usr/libexec/PlistBuddy -c 'Print :get-task-allow' "$entitlements" 2>/dev/null || echo false)" = false ] \
             || fail "signed binary has get-task-allow=true"
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.applesignin:0' "$entitlements" >/dev/null 2>&1 \
+            || fail "signed binary lacks the Sign in with Apple entitlement"
+          [ -f "$app/GoogleService-Info.plist" ] || fail "GoogleService-Info.plist missing from the app bundle"
 
           echo "Signed IPA verification: PASS (build $BUILD_NUMBER)"
 

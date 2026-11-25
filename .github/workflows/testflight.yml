@@ -296,8 +296,12 @@ jobs:
           mkdir -p "$key_dir"
           printf '%s' "$ASC_PRIVATE_KEY_B64" | base64 --decode > "$key_dir/AuthKey_${ASC_KEY_ID}.p8"
           chmod 600 "$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          # altool can exit 0 on a rejected package; fail on its error lines too.
           xcrun altool --validate-app -f "$IPA_PATH" -t ios \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/altool-validate.log"
+          if grep -qE "ERROR:|Validation failed|Failed to validate" "$RUNNER_TEMP/altool-validate.log"; then
+            echo "::error::App Store Connect rejected the package (see the altool output above)"; exit 1
+          fi
 
       - name: Upload IPA to App Store Connect/TestFlight
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload == true }}
@@ -309,7 +313,10 @@ jobs:
           set -euo pipefail
           [ "$UPLOAD_REQUESTED" = true ] || { echo "::error::upload not requested"; exit 1; }
           xcrun altool --upload-app -f "$IPA_PATH" -t ios \
-            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/altool-upload.log"
+          if grep -qE "ERROR:|Failed to upload|Validation failed" "$RUNNER_TEMP/altool-upload.log"; then
+            echo "::error::Upload to App Store Connect failed (see the altool output above)"; exit 1
+          fi
 
       - name: Clean up signing material and build outputs
         if: ${{ always() }}

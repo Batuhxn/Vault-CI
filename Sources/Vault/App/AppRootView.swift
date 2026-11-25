@@ -48,6 +48,8 @@ private struct WelcomeScreen: View {
         ScreenScaffold {
             VStack(alignment: .leading, spacing: 0) {
                 HeadlineBlock(meta: "Watchlink", headline: "İki kişilik\nsessiz bir hat.")
+                    // Hidden: a second test account on a device that shares this Apple Account (iPad).
+                    .onLongPressGesture(minimumDuration: 3) { Task { await model.signInForTesting() } }
                 Text("Senin telefonunla onunki arasında, sadece size ait bir alan.")
                     .font(.body)
                     .foregroundStyle(Room.ink2)

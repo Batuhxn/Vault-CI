@@ -43,6 +43,14 @@ final class AppModel {
         }
     }
 
+    /// Hidden test sign-in (long-press the title on the welcome screen).
+    func signInForTesting() async {
+        await run {
+            try await self.backend.signInForTesting()
+            await self.loadPair()
+        }
+    }
+
     func signOut() {
         pairListener?.cancel()
         store?.stop()

@@ -46,6 +46,9 @@ protocol ChatBackend: AnyObject {
 
     // Sign-in (Sign in with Apple; the view layer runs ASAuthorization).
     func signInWithApple(idToken: String, rawNonce: String, fullName: PersonNameComponents?) async throws
+    /// Test devices only (hidden on the welcome screen): a second account on a
+    /// device that shares the owner's Apple Account, e.g. an iPad.
+    func signInForTesting() async throws
     func signOut() throws
 
     // Pairing.

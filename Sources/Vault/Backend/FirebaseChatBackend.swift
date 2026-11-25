@@ -38,6 +38,10 @@ final class FirebaseChatBackend: ChatBackend {
         _ = try await auth.signIn(with: credential)
     }
 
+    func signInForTesting() async throws {
+        _ = try await auth.signInAnonymously()
+    }
+
     func signOut() throws { try auth.signOut() }
 
     // MARK: Pairing

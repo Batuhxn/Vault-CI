@@ -22,6 +22,9 @@ jobs:
     env:
       BUNDLE_ID: com.batuhxn.watchlink
       EXPECTED_PROFILE_NAME: Watchlink App Store Connect
+      NOTIFY_BUNDLE_ID: com.batuhxn.watchlink.notify
+      EXPECTED_NOTIFY_PROFILE_NAME: Watchlink Notify App Store Connect
+      APP_GROUP: group.com.batuhxn.watchlink
       BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - name: Checkout
@@ -105,47 +108,63 @@ jobs:
           echo "KEYCHAIN_PATH=$keychain" >> "$GITHUB_ENV"
           echo "Apple Distribution identity imported: PASS"
 
-      - name: Install and verify provisioning profile
+      - name: Install and verify provisioning profiles (app + notification extension)
         env:
           IOS_PROFILE_B64: ${{ secrets.IOS_PROFILE_B64 }}
+          IOS_NOTIFY_PROFILE_B64: ${{ secrets.IOS_NOTIFY_PROFILE_B64 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           umask 077
-          profile="$RUNNER_TEMP/watchlink-profile.mobileprovision"
-          decoded="$RUNNER_TEMP/watchlink-profile.plist"
-          printf '%s' "$IOS_PROFILE_B64" | base64 --decode > "$profile"
-          security cms -D -i "$profile" > "$decoded" 2>/dev/null
-          pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$decoded" 2>/dev/null; }
 
-          fail() { echo "::error::provisioning profile: $1"; exit 1; }
-          [ -s "$decoded" ] || fail "could not be decoded with security cms"
+          # install <secret value> <expected name> <bundle id> <env prefix> <needs push>
+          install() {
+            local b64="$1" expected="$2" bundle="$3" prefix="$4" push="$5"
+            local profile="$RUNNER_TEMP/watchlink-$prefix.mobileprovision"
+            local decoded="$RUNNER_TEMP/watchlink-$prefix.plist"
+            fail() { echo "::error::provisioning profile ($expected): $1"; exit 1; }
+            [ -n "$b64" ] || fail "secret is not set"
+            printf '%s' "$b64" | base64 --decode > "$profile"
+            security cms -D -i "$profile" > "$decoded" 2>/dev/null
+            pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$decoded" 2>/dev/null; }
+            [ -s "$decoded" ] || fail "could not be decoded with security cms"
 
-          # TeamName is usually the account holder's name; keep it out of public logs.
-          team_name="$(pb TeamName || true)"
-          if [ -n "$team_name" ]; then echo "::add-mask::$team_name"; fi
+            # TeamName is usually the account holder's name; keep it out of public logs.
+            local team_name; team_name="$(pb TeamName || true)"
+            if [ -n "$team_name" ]; then echo "::add-mask::$team_name"; fi
 
-          uuid="$(pb UUID || true)"
-          name="$(pb Name || true)"
-          app_id="$(pb Entitlements:application-identifier || true)"
-          team="$(pb TeamIdentifier:0 || true)"
-          [[ "$uuid" =~ ^[0-9A-Fa-f-]{36}$ ]] || fail "UUID is malformed"
-          [ "$name" = "$EXPECTED_PROFILE_NAME" ] || fail "Name is '$name', expected '$EXPECTED_PROFILE_NAME'"
-          [ "$app_id" = "$APPLE_TEAM_ID.$BUNDLE_ID" ] || fail "application-identifier does not match APPLE_TEAM_ID.$BUNDLE_ID"
-          [ "$team" = "$APPLE_TEAM_ID" ] || fail "TeamIdentifier does not match APPLE_TEAM_ID"
-          [ "$(pb Entitlements:get-task-allow || true)" = false ] || fail "get-task-allow is not false (not a distribution profile)"
-          ! pb ProvisionedDevices >/dev/null || fail "profile lists devices (development/ad hoc, not App Store Connect)"
+            local uuid name app_id team
+            uuid="$(pb UUID || true)"
+            name="$(pb Name || true)"
+            app_id="$(pb Entitlements:application-identifier || true)"
+            team="$(pb TeamIdentifier:0 || true)"
+            [[ "$uuid" =~ ^[0-9A-Fa-f-]{36}$ ]] || fail "UUID is malformed"
+            [ "$name" = "$expected" ] || fail "Name is '$name'"
+            [ "$app_id" = "$APPLE_TEAM_ID.$bundle" ] || fail "application-identifier does not match APPLE_TEAM_ID.$bundle"
+            [ "$team" = "$APPLE_TEAM_ID" ] || fail "TeamIdentifier does not match APPLE_TEAM_ID"
+            [ "$(pb Entitlements:get-task-allow || true)" = false ] || fail "get-task-allow is not false (not a distribution profile)"
+            ! pb ProvisionedDevices >/dev/null || fail "profile lists devices (development/ad hoc, not App Store Connect)"
+            [ "$(pb Entitlements:com.apple.security.application-groups:0 || true)" = "$APP_GROUP" ] \
+              || fail "App Group $APP_GROUP is not enabled for this App ID (regenerate the profile)"
+            if [ "$push" = yes ]; then
+              [ "$(pb Entitlements:aps-environment || true)" = production ] \
+                || fail "Push Notifications is not enabled for this App ID (regenerate the profile)"
+            fi
 
-          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" \
-                     "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
-            mkdir -p "$dir"
-            cp "$profile" "$dir/$uuid.mobileprovision"
-          done
-          {
-            echo "PROFILE_UUID=$uuid"
-            echo "PROFILE_NAME=$name"
-          } >> "$GITHUB_ENV"
-          echo "Provisioning profile $name ($uuid): PASS"
+            for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" \
+                       "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+              mkdir -p "$dir"
+              cp "$profile" "$dir/$uuid.mobileprovision"
+            done
+            {
+              echo "${prefix}_UUID=$uuid"
+              echo "${prefix}_NAME=$name"
+            } >> "$GITHUB_ENV"
+            echo "Provisioning profile $name ($uuid): PASS"
+          }
+
+          install "${IOS_PROFILE_B64:-}" "$EXPECTED_PROFILE_NAME" "$BUNDLE_ID" PROFILE yes
+          install "${IOS_NOTIFY_PROFILE_B64:-}" "$EXPECTED_NOTIFY_PROFILE_NAME" "$NOTIFY_BUNDLE_ID" NOTIFY_PROFILE no
 
       - name: Archive with manual Apple Distribution signing
         env:
@@ -160,16 +179,22 @@ jobs:
           import os, pathlib
           spec = pathlib.Path("project.yml")
           text = spec.read_text()
-          anchor = '        Release:\n          SWIFT_OPTIMIZATION_LEVEL: "-O"\n'
-          assert text.count(anchor) == 1, "Vault-App Release config anchor not found"
-          signing = "".join(f'          {key}: "{value}"\n' for key, value in [
-              ("DEVELOPMENT_TEAM", os.environ["APPLE_TEAM_ID"]),
-              ("CODE_SIGN_STYLE", "Manual"),
-              ("CODE_SIGN_IDENTITY", "Apple Distribution"),
-              ("PROVISIONING_PROFILE_SPECIFIER", os.environ["PROFILE_NAME"]),
-              ("OTHER_CODE_SIGN_FLAGS", "--keychain " + os.environ["KEYCHAIN_PATH"]),
-          ])
-          spec.write_text(text.replace(anchor, anchor + signing))
+          def signing(profile):
+              return "".join(f'          {key}: "{value}"\n' for key, value in [
+                  ("DEVELOPMENT_TEAM", os.environ["APPLE_TEAM_ID"]),
+                  ("CODE_SIGN_STYLE", "Manual"),
+                  ("CODE_SIGN_IDENTITY", "Apple Distribution"),
+                  ("PROVISIONING_PROFILE_SPECIFIER", profile),
+                  ("OTHER_CODE_SIGN_FLAGS", "--keychain " + os.environ["KEYCHAIN_PATH"]),
+              ])
+          # Vault-App and WatchlinkNotify Release configs, each with its own profile.
+          for anchor, profile in [
+              ('        Release:\n          SWIFT_OPTIMIZATION_LEVEL: "-O"\n', os.environ["PROFILE_NAME"]),
+              ('        Release:\n          SWIFT_COMPILATION_MODE: wholemodule\n', os.environ["NOTIFY_PROFILE_NAME"]),
+          ]:
+              assert text.count(anchor) == 1, f"Release config anchor not found: {anchor!r}"
+              text = text.replace(anchor, anchor + signing(profile))
+          spec.write_text(text)
           PY
           xcodegen generate --spec project.yml
           xcodebuild archive \
@@ -208,6 +233,7 @@ jobs:
             <key>provisioningProfiles</key>
             <dict>
               <key>$BUNDLE_ID</key><string>$PROFILE_NAME</string>
+              <key>$NOTIFY_BUNDLE_ID</key><string>$NOTIFY_PROFILE_NAME</string>
             </dict>
           </dict>
           </plist>
@@ -276,6 +302,28 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :com.apple.developer.applesignin:0' "$entitlements" >/dev/null 2>&1 \
             || fail "signed binary lacks the Sign in with Apple entitlement"
           [ -f "$app/GoogleService-Info.plist" ] || fail "GoogleService-Info.plist missing from the app bundle"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :aps-environment' "$entitlements" 2>/dev/null || true)" = production ] \
+            || fail "signed binary lacks aps-environment=production"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$entitlements" 2>/dev/null || true)" = "$APP_GROUP" ] \
+            || fail "signed binary lacks the App Group"
+          [ -f "$app/heartbeat.wav" ] || fail "heartbeat.wav missing from the app bundle"
+
+          # Notification Service Extension: present, signed with its own profile, same version.
+          appex="$app/PlugIns/WatchlinkNotify.appex"
+          [ -d "$appex" ] || fail "WatchlinkNotify.appex missing from PlugIns"
+          codesign --verify --strict "$appex" || fail "extension codesign verification failed"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$appex/Info.plist")" = "$NOTIFY_BUNDLE_ID" ] \
+            || fail "extension bundle id mismatch"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$appex/Info.plist")" = 0.1.1 ] \
+            || fail "extension version mismatch"
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$appex/Info.plist")" = "$BUILD_NUMBER" ] \
+            || fail "extension build number mismatch"
+          security cms -D -i "$appex/embedded.mobileprovision" > "$RUNNER_TEMP/watchlink-appex-embedded.plist" 2>/dev/null
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$RUNNER_TEMP/watchlink-appex-embedded.plist")" = "$NOTIFY_PROFILE_UUID" ] \
+            || fail "extension embedded profile does not match"
+          codesign -d --entitlements - --xml "$appex" > "$RUNNER_TEMP/watchlink-appex-entitlements.plist" 2>/dev/null
+          [ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups:0' "$RUNNER_TEMP/watchlink-appex-entitlements.plist" 2>/dev/null || true)" = "$APP_GROUP" ] \
+            || fail "extension lacks the App Group"
 
           echo "Signed IPA verification: PASS (build $BUILD_NUMBER)"
 
@@ -323,10 +371,11 @@ jobs:
         run: |
           set -uo pipefail
           security delete-keychain "$RUNNER_TEMP/watchlink-signing.keychain-db" 2>/dev/null || true
-          if [ -n "${PROFILE_UUID:-}" ]; then
-            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision" \
-                  "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-          fi
+          for uuid in "${PROFILE_UUID:-}" "${NOTIFY_PROFILE_UUID:-}"; do
+            [ -n "$uuid" ] || continue
+            rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/$uuid.mobileprovision" \
+                  "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$uuid.mobileprovision"
+          done
           rm -f "$HOME"/.appstoreconnect/private_keys/AuthKey_*.p8
           rm -rf "$RUNNER_TEMP"/watchlink-* "$RUNNER_TEMP/Watchlink.xcarchive"
           echo "Cleanup complete"

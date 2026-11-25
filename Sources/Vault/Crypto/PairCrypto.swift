@@ -86,6 +86,10 @@ enum PairCrypto {
         func messageAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|msg|\(pairID)|\(sender)|\(id)" }
         func photoAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|photo|\(pairID)|\(sender)|\(id)" }
         func profileAAD(of member: String) -> String { "\(PairCrypto.version)|profile|\(pairID)|\(member)" }
+
+        /// The raw pair key, handed to the notification extension through the
+        /// shared Keychain group (this device only) so it can open pushes.
+        var keyData: Data { key.withUnsafeBytes { Data($0) } }
     }
 
     /// Derives the session when both public keys are present and this device
@@ -109,6 +113,11 @@ enum PairCrypto {
         return Session(pairID: pairID, myID: myID, key: key, safetyCode: safetyCode(ordered[0], ordered[1]))
     }
 
+    /// The notification extension rebuilds a session from the shared pair key.
+    static func session(pairID: String, myID: String, keyData: Data) -> Session {
+        Session(pairID: pairID, myID: myID, key: SymmetricKey(data: keyData), safetyCode: "")
+    }
+
     /// Six digits both phones show; equal codes mean nobody swapped a key.
     static func safetyCode(_ first: Data, _ second: Data) -> String {
         let digest = Array(SHA256.hash(data: Data("\(version)|safety".utf8) + first + second))
@@ -120,14 +129,18 @@ enum PairCrypto {
 
 /// What a sealed message says. The server sees none of it, not even the kind.
 struct SealedPayload: Codable, Equatable {
-    var kind: String            // "text" | "photo" | "heartbeat"
+    /// "text" | "photo" | "heartbeat" | "private" (Özel Alan: pushes never show what it is).
+    var kind: String
     var text: String?
     var photoID: String?
     var bpm: Int?
 }
 
-/// A member's sealed profile: the name they chose and their recorded rhythm.
+/// A member's sealed profile: the name they chose, their recorded rhythm and
+/// the push address of their device (hex APNs token). Only the partner's phone
+/// can read it, so nobody else learns where to send notifications.
 struct SealedProfile: Codable, Equatable {
     var name: String?
     var bpm: Int?
+    var push: String?
 }

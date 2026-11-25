@@ -55,6 +55,8 @@ final class AppModel {
         pairListener?.cancel()
         store?.stop()
         store = nil
+        PushCenter.shared.onToken = nil
+        SharedPairKey.removeAll()
         try? backend.signOut()
         phase = .signedOut
     }
@@ -131,6 +133,11 @@ final class AppModel {
             let fresh = WatchlinkStore(backend: backend, pair: pair, myID: me, session: session)
             fresh.start()
             store = fresh
+            // Once paired: ask for notifications and give the partner (sealed) our push address.
+            PushCenter.shared.onToken = { [weak fresh] token in
+                Task { await fresh?.savePushToken(token) }
+            }
+            Task { await PushCenter.shared.register() }
         } else {
             return  // keys not in place yet (or not on this phone)
         }

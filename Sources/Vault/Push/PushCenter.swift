@@ -1,0 +1,61 @@
+import UIKit
+import UserNotifications
+
+/// Where the phones ask for a push to be delivered: a small Cloudflare Worker
+/// (workers/push). It checks, with the sender's own Firebase sign-in, that the
+/// message really exists in a pair they belong to, then hands Apple a generic
+/// notification plus the still-sealed message. Neither the Worker nor Apple
+/// can read it; the partner's notification extension opens it on the phone.
+enum PushConfig {
+    /// `nil` until the Worker is deployed: sending works, pushes are skipped.
+    static let endpoint: URL? = nil
+}
+
+/// Notification permission and this device's APNs token.
+@MainActor
+final class PushCenter {
+    static let shared = PushCenter()
+
+    /// The current token as lowercase hex, once Apple has issued one.
+    private(set) var token: String?
+    /// Called with every new token (the store seals it into this member's profile).
+    var onToken: ((String) -> Void)? {
+        didSet { if let token { onToken?(token) } }
+    }
+
+    /// Asks once (iOS remembers the answer) and registers with APNs.
+    func register() async {
+        let center = UNUserNotificationCenter.current()
+        _ = try? await center.requestAuthorization(options: [.alert, .sound])
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
+    func didRegister(deviceToken: Data) {
+        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        guard hex != token else { return }
+        token = hex
+        onToken?(hex)
+    }
+}
+
+/// UIKit hooks SwiftUI doesn't offer: the APNs token and foreground presentation.
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in PushCenter.shared.didRegister(deviceToken: deviceToken) }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
+
+    /// While Watchlink is open the message is already on screen (and a heartbeat
+    /// plays as haptics), so no banner on top of it.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
+        -> UNNotificationPresentationOptions { [] }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {}
+}

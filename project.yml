@@ -44,11 +44,16 @@ targets:
         excludes:
           - Legacy/**
       - path: Resources/Assets.xcassets
+      # Notification sounds are looked up in the app bundle (heartbeat.wav).
+      - path: Resources/Sounds
+        buildPhase: resources
     dependencies:
       - package: Firebase
         product: FirebaseAuth
       - package: Firebase
         product: FirebaseFirestore
+      # Opens pushes on the phone (end-to-end encrypted previews).
+      - target: WatchlinkNotify
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink
@@ -75,6 +80,42 @@ targets:
           SWIFT_OPTIMIZATION_LEVEL: "-Onone"
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
         Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+  # Notification Service Extension: turns the generic push into the real
+  # preview using the pair key the app shares through the app group Keychain.
+  WatchlinkNotify:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Extensions/Notify
+        excludes:
+          - "*.entitlements"
+          - Info.plist
+      - path: Sources/Vault/Crypto/PairCrypto.swift
+      - path: Sources/Vault/Crypto/SharedPairKey.swift
+    info:
+      path: Extensions/Notify/Info.plist
+      properties:
+        CFBundleDisplayName: Watchlink
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.notify
+        CODE_SIGN_ENTITLEMENTS: Extensions/Notify/Notify.entitlements
+        PRODUCT_NAME: WatchlinkNotify
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+        Release:
+          SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: "-O"
 
 schemes:

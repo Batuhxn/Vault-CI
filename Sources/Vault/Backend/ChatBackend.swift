@@ -66,7 +66,10 @@ protocol ChatBackend: AnyObject {
     func uploadSealedPhoto(_ sealed: Data, id: String, pairID: String) async throws
     func loadSealedPhoto(id: String, pairID: String) async throws -> Data
 
-    // Profile (sealed name + rhythm), push.
+    // Profile (sealed name, rhythm, push address).
     func saveSealedProfile(_ sealed: Data, pairID: String) async throws
-    func registerPushToken(_ token: String) async throws
+
+    /// A short-lived proof of this sign-in, shown to the push Worker so it can
+    /// check (through the same security rules) that the message is really ours.
+    func idToken() async throws -> String
 }

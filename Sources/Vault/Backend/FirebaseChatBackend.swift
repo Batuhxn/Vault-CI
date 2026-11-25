@@ -151,16 +151,16 @@ final class FirebaseChatBackend: ChatBackend {
         return data
     }
 
-    // MARK: Profile + push
+    // MARK: Profile + push proof
 
     func saveSealedProfile(_ sealed: Data, pairID: String) async throws {
         let me = try uid()
         try await db.collection("pairs").document(pairID).updateData(["sealed.\(me)": sealed])
     }
 
-    func registerPushToken(_ token: String) async throws {
-        let me = try uid()
-        try await db.collection("users").document(me).setData(["fcmToken": token])
+    func idToken() async throws -> String {
+        guard let user = auth.currentUser else { throw BackendError.notSignedIn }
+        return try await user.getIDToken()
     }
 
     // MARK: Helpers

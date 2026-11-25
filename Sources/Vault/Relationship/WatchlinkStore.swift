@@ -121,6 +121,7 @@ final class WatchlinkStore {
         self.pair = pair
         self.myID = myID
         self.session = session
+        shareKeyWithExtension()
     }
 
     func start() {
@@ -141,7 +142,20 @@ final class WatchlinkStore {
         monitor?.cancel(); monitor = nil
     }
 
-    func update(pair: PairInfo) { self.pair = pair }
+    func update(pair: PairInfo) {
+        self.pair = pair
+        shareKeyWithExtension()
+    }
+
+    /// Lets the notification extension open this pair's pushes (and title them
+    /// with the partner's name). Rewritten only when something changed.
+    @ObservationIgnored private var sharedKey: SharedPairKey?
+    private func shareKeyWithExtension() {
+        let shared = SharedPairKey(pairID: pair.id, myID: myID, key: session.keyData, partnerName: partnerName)
+        guard shared != sharedKey else { return }
+        shared.save()
+        sharedKey = shared
+    }
 
     // MARK: Profile
 
@@ -152,17 +166,23 @@ final class WatchlinkStore {
         return profile
     }
 
-    /// Seals this member's name and rhythm into the pair document.
-    func saveProfile(name: String? = nil, bpm: Int? = nil) async {
-        var profile = profile(of: myID)
+    /// Seals this member's name, rhythm and push address into the pair document.
+    func saveProfile(name: String? = nil, bpm: Int? = nil, push: String? = nil) async {
+        let current = profile(of: myID)
+        var profile = current
         if let name { profile.name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40)) }
         if let bpm { profile.bpm = min(max(bpm, 40), 180) }
+        if let push { profile.push = String(push.prefix(200)) }
+        guard profile != current else { return }
         guard let data = try? JSONEncoder().encode(profile),
               let sealed = try? session.seal(data, aad: session.profileAAD(of: myID)) else { return }
         try? await backend.saveSealedProfile(sealed, pairID: pair.id)
     }
 
     func saveMyBPM(_ bpm: Int) async { await saveProfile(bpm: bpm) }
+
+    /// This device's APNs token; only the partner's phone can read it.
+    func savePushToken(_ token: String) async { await saveProfile(push: token) }
 
     // MARK: Sending
 
@@ -227,11 +247,27 @@ final class WatchlinkStore {
                 guard let sealed else { throw PairCrypto.Failure.unreadable }
                 try await before?(backend, pairID)
                 try await backend.sendSealed(sealed, id: id, pairID: pairID)
+                await self?.notifyPartner(messageID: id)
             } catch {
                 self?.outbox[localID]?.delivery = .failed
                 self?.rebuild()
             }
         }
+    }
+
+    /// Asks the push Worker to wake the partner's phone for this message. Best
+    /// effort: if it fails, the message is still delivered and shows on open.
+    private func notifyPartner(messageID: String) async {
+        guard let endpoint = PushConfig.endpoint, let partnerID,
+              let address = profile(of: partnerID).push, !address.isEmpty,
+              let proof = try? await backend.idToken() else { return }
+        var request = URLRequest(url: endpoint.appendingPathComponent("notify"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(proof)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONEncoder().encode(["pair": pair.id, "msg": messageID, "to": address])
+        _ = try? await URLSession.shared.data(for: request)
     }
 
     private func open(_ message: BackendMessage) -> SealedPayload? {

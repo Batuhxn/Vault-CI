@@ -441,7 +441,7 @@ private struct PhotoBubble: View {
         .fullScreenCover(isPresented: $fullScreen) {
             ZStack(alignment: .topTrailing) {
                 Room.night.ignoresSafeArea()
-                if let image { Image(uiImage: image).resizable().scaledToFit() }
+                if let image { ZoomablePhoto(image: image) { fullScreen = false } }
                 Button { fullScreen = false } label: {
                     Image(systemName: "xmark").font(.body.weight(.semibold))
                         .foregroundStyle(Room.nightText).frame(width: 44, height: 44)
@@ -474,5 +474,83 @@ private struct HeartbeatBubble: View {
         }
         .buttonStyle(Pressable())
         .accessibilityLabel(mine ? "Kalp atışın, dakikada \(bpm) atım" : "Bir kalp atışı, dakikada \(bpm) atım. Hissetmek için dokun.")
+    }
+}
+
+/// Full-screen photo: pinch to zoom (1x–5x), drag to pan while zoomed,
+/// double-tap to toggle 2.5x, swipe down at 1x to close.
+private struct ZoomablePhoto: View {
+    let image: UIImage
+    let close: () -> Void
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @State private var dismissDrag: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geometry in
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .scaleEffect(scale)
+                .offset(x: offset.width, y: offset.height + dismissDrag)
+                .opacity(1 - min(dismissDrag / 400, 0.5))
+                .gesture(magnify(in: geometry.size).simultaneously(with: drag(in: geometry.size)))
+                .onTapGesture(count: 2) {
+                    withAnimation(RelationshipMotion.soft) {
+                        if scale > 1 { reset() } else { scale = 2.5; lastScale = 2.5 }
+                    }
+                }
+        }
+        .ignoresSafeArea()
+        .accessibilityLabel("Fotoğraf")
+        .accessibilityHint("Yakınlaştırmak için iki kez dokun")
+    }
+
+    private func magnify(in size: CGSize) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in scale = min(max(lastScale * value.magnification, 1), 5) }
+            .onEnded { _ in
+                lastScale = scale
+                if scale <= 1.01 { withAnimation(RelationshipMotion.soft) { reset() } }
+                else { withAnimation(RelationshipMotion.soft) { clamp(in: size) } }
+            }
+    }
+
+    private func drag(in size: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if scale > 1 {
+                    offset = CGSize(width: lastOffset.width + value.translation.width,
+                                    height: lastOffset.height + value.translation.height)
+                } else {
+                    dismissDrag = max(value.translation.height, 0)
+                }
+            }
+            .onEnded { value in
+                if scale > 1 {
+                    lastOffset = offset
+                    withAnimation(RelationshipMotion.soft) { clamp(in: size) }
+                } else if value.translation.height > 120 {
+                    close()
+                } else {
+                    withAnimation(RelationshipMotion.soft) { dismissDrag = 0 }
+                }
+            }
+    }
+
+    /// Keeps the zoomed image covering the screen edge it was dragged past.
+    private func clamp(in size: CGSize) {
+        let maxX = size.width * (scale - 1) / 2
+        let maxY = size.height * (scale - 1) / 2
+        offset = CGSize(width: min(max(offset.width, -maxX), maxX), height: min(max(offset.height, -maxY), maxY))
+        lastOffset = offset
+    }
+
+    private func reset() {
+        scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero; dismissDrag = 0
     }
 }

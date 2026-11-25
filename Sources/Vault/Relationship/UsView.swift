@@ -10,13 +10,13 @@ struct UsView: View {
 
     /// "Deniz\n& Ada." when both names exist; otherwise a name-free line.
     static func headline(me: Person, partner: Person) -> String {
-        me.name.isEmpty || partner.name.isEmpty ? "The two\nof you." : "\(me.name)\n& \(partner.name)."
+        me.name.isEmpty || partner.name.isEmpty ? "Siz\nikiniz." : "\(me.name)\n& \(partner.name)."
     }
 
     /// Trust, in plain terms. No encryption claim: the MVP has none end-to-end.
     static func whereYouAre(_ state: SecurityState, connected: Bool) -> String {
         state == .secure && connected
-            ? "Linked, between your two phones. Only you two can see what's here."
+            ? "İki telefonunuz arasında bağlı. Buradakileri sadece ikiniz görebilirsiniz."
             : SecurityStatusView.label(state, connected: connected) + "."
     }
 
@@ -26,13 +26,13 @@ struct UsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // No pairing date is stored, so no "together since" line and never a day counter.
-                    HeadlineBlock(meta: "Your shared space", headline: Self.headline(me: profile.me, partner: profile.partner))
+                    HeadlineBlock(meta: "Ortak alanınız", headline: Self.headline(me: profile.me, partner: profile.partner))
                     PairMonogram(partner: profile.partner.initial, me: profile.me.initial)
                         .padding(.horizontal, screenMargin)
                         .padding(.top, 28)
                     narrative(profile)
                         .padding(.top, 56)
-                    Text("This space grows as you do.")
+                    Text("Bu alan sizinle birlikte büyür.")
                         .wlWhisper(size: 17)
                         .foregroundStyle(Room.ink3)
                         .frame(maxWidth: .infinity)
@@ -46,16 +46,16 @@ struct UsView: View {
 
     private func narrative(_ profile: CoupleProfile) -> some View {
         VStack(alignment: .leading, spacing: 48) {
-            Chapter(title: "Heartbeat", marker: .filled) {
+            Chapter(title: "Kalp Atışı", marker: .filled) {
                 HeartbeatChapter(store: store, partner: profile.partner)
             }
-            Chapter(title: "Where you are", marker: .filled) {
+            Chapter(title: "Neredesiniz", marker: .filled) {
                 Text(Self.whereYouAre(store.securityState, connected: store.connectionAvailable))
                     .wlTitle()
                     .foregroundStyle(Room.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Chapter(title: "Dates", marker: .open) {
+            Chapter(title: "Tarihler", marker: .open) {
                 if let next = relationship.snapshot.dates.sorted(by: { $0.date < $1.date }).first {
                     HStack(alignment: .firstTextBaseline, spacing: 14) {
                         Text(next.date.formatted(.dateTime.day())).wlDisplay().foregroundStyle(Room.ink)
@@ -65,24 +65,24 @@ struct UsView: View {
                         }
                     }
                 }
-                Text("The days that matter to you two will gather here.")
+                Text("Sizin için önemli günler burada toplanacak.")
                     .font(.subheadline)
                     .foregroundStyle(Room.ink3)
             }
-            Chapter(title: "Moments", marker: .later, trailing: "Arriving later") {
+            Chapter(title: "Anlar", marker: .later, trailing: "Yakında") {
                 MomentsPlaceholder()
-                Text("Photos and notes you want to keep, only between you.")
+                Text("Saklamak istediğiniz fotoğraflar ve notlar, sadece aranızda.")
                     .font(.subheadline)
                     .foregroundStyle(Room.ink2)
             }
-            Chapter(title: "Each other", marker: .later, trailing: "Arriving later") {
+            Chapter(title: "Birbiriniz", marker: .later, trailing: "Yakında") {
                 VStack(spacing: 0) {
-                    person(profile.partner, partner: true, fallback: "Your partner")
+                    person(profile.partner, partner: true, fallback: "Partnerin")
                     Rectangle().fill(Room.hairline).frame(height: 1).padding(.leading, 70)
-                    person(profile.me, partner: false, fallback: "You")
+                    person(profile.me, partner: false, fallback: "Sen")
                 }
                 .wlCard()
-                Text("How you appear to one another.")
+                Text("Birbirinize nasıl göründüğünüz.")
                     .font(.subheadline)
                     .foregroundStyle(Room.ink2)
             }
@@ -187,21 +187,21 @@ private struct HeartbeatChapter: View {
                     .background(Room.mist, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             }
             .buttonStyle(Pressable())
-            .accessibilityLabel(playing ? "Stop the heartbeat" : "Feel \(partner.shownName)'s heartbeat")
+            .accessibilityLabel(playing ? "Kalp atışını durdur" : "\(partner.shownName) · kalp atışını hisset")
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("When it's hard, hold on to this.").wlTitle().foregroundStyle(Room.ink)
-                Text("\(partner.shownName)'s rhythm · \(store.partnerBPM) bpm")
+                Text("Zorlandığında, buna tutun.").wlTitle().foregroundStyle(Room.ink)
+                Text("\(partner.shownName) · \(store.partnerBPM) bpm")
                     .font(.subheadline).foregroundStyle(Room.ink2)
             }
 
             HStack {
                 Stepper(value: Binding(get: { editingBPM ?? store.myBPM }, set: { editingBPM = $0 }), in: 40...180) {
-                    Text("Your rhythm · \(editingBPM ?? store.myBPM) bpm").font(.subheadline).foregroundStyle(Room.ink2)
+                    Text("Senin ritmin · \(editingBPM ?? store.myBPM) bpm").font(.subheadline).foregroundStyle(Room.ink2)
                 }
             }
             if let editingBPM, editingBPM != store.myBPM {
-                Button("Save my rhythm") {
+                Button("Ritmimi kaydet") {
                     Task { await store.saveMyBPM(editingBPM); self.editingBPM = nil }
                 }
                 .font(.subheadline.weight(.semibold))

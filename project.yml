@@ -16,6 +16,8 @@ configs:
 options:
   deploymentTarget:
     iOS: "17.0"
+  # Turkish UI: system controls (Sign in with Apple, photo picker, dates) follow it.
+  developmentLanguage: tr
   createIntermediateGroups: true
 
 packages:

@@ -22,10 +22,10 @@ struct HomeView: View {
 
     static func greeting(at date: Date, calendar: Calendar = .current) -> String {
         switch calendar.component(.hour, from: date) {
-        case 5..<12: return "Good morning"
-        case 12..<17: return "Good afternoon"
-        case 17..<22: return "Good evening"
-        default: return "Good night"
+        case 5..<12: return "Günaydın"
+        case 12..<17: return "İyi günler"
+        case 17..<22: return "İyi akşamlar"
+        default: return "İyi geceler"
         }
     }
 
@@ -83,7 +83,7 @@ struct HomeView: View {
             confirming[card] = content
             relationship.resolve(card)
         }
-        AccessibilityNotification.Announcement("\(content.title) received").post()
+        AccessibilityNotification.Announcement("\(content.title) alındı").post()
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(reduceMotion ? 300 : 700))
             withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) {
@@ -118,8 +118,8 @@ private struct ConversationSurface: View {
                     Spacer(minLength: 12)
                     if store.messages.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("You and \(partner.shownName) are connected.").wlTitle().foregroundStyle(Room.ink)
-                            Text("This is your space now. Only the two of you can see what's here.")
+                            Text("\(partner.shownName) ile bağlandınız.").wlTitle().foregroundStyle(Room.ink)
+                            Text("Burası artık sizin alanınız. Buradakileri sadece ikiniz görebilirsiniz.")
                                 .font(.subheadline)
                                 .foregroundStyle(Room.ink2)
                         }
@@ -139,10 +139,10 @@ private struct ConversationSurface: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(Pressable())
-            .accessibilityLabel("Open conversation with \(partner.shownName)")
+            .accessibilityLabel("\(partner.shownName) ile sohbeti aç")
 
             Button { open(true) } label: {
-                Text(store.messages.isEmpty ? "Write the first message" : partner.writeTo)
+                Text(store.messages.isEmpty ? "İlk mesajı yaz" : partner.writeTo)
                     .font(.body)
                     .foregroundStyle(Room.ink3)
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -181,7 +181,7 @@ private struct WaitingCard: View {
                 .contentTransition(.symbolEffect(.replace))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
-                Text(confirmed ? "Received" : content.title).font(.subheadline.weight(.semibold))
+                Text(confirmed ? "Alındı" : content.title).font(.subheadline.weight(.semibold))
                 if !confirmed {
                     Text(content.detail).font(.subheadline).foregroundStyle(Room.ink2)
                 }
@@ -227,25 +227,25 @@ struct HomeCardContent: Equatable {
             guard let signal = snapshot.signals.first(where: { $0.id == id }) else { return nil }
             switch signal.kind {
             case .footprint:
-                self.init(title: "A footprint", detail: "\(partner) was here, thinking of you.", symbol: "hand.wave", actionTitle: "Okay")
+                self.init(title: "Bir iz", detail: "\(partner) buradaydı, seni düşünüyor.", symbol: "hand.wave", actionTitle: "Tamam")
             case .stillHere(let kind):
-                self.init(title: "Still here", detail: kind.text, symbol: "flag", actionTitle: "Okay")
+                self.init(title: "Hâlâ buradayım", detail: kind.text, symbol: "flag", actionTitle: "Tamam")
             }
         case .revealWaiting:
-            self.init(title: "Reveal Together", detail: "\(partner) answered. Both answers stay hidden until you answer too.", symbol: "eye.slash")
+            self.init(title: "Birlikte Açın", detail: "\(partner) cevap verdi. Sen de cevaplayana kadar iki cevap da gizli kalır.", symbol: "eye.slash")
         case .revealReady:
-            self.init(title: "Reveal Together", detail: "Both answers are ready to open together.", symbol: "eye")
+            self.init(title: "Birlikte Açın", detail: "İki cevap da birlikte açılmaya hazır.", symbol: "eye")
         case .decisionWaiting(let id):
-            self.init(title: snapshot.decisions.first { $0.id == id }?.title ?? "Blind decision",
-                      detail: "Your private vote is waiting.", symbol: "square.stack")
+            self.init(title: snapshot.decisions.first { $0.id == id }?.title ?? "Gizli karar",
+                      detail: "Gizli oyun seni bekliyor.", symbol: "square.stack")
         case .decisionMatched(let id):
-            self.init(title: snapshot.decisions.first { $0.id == id }?.title ?? "Blind decision",
-                      detail: "You have a match.", symbol: "checkmark.circle")
+            self.init(title: snapshot.decisions.first { $0.id == id }?.title ?? "Gizli karar",
+                      detail: "Eşleştiniz.", symbol: "checkmark.circle")
         case .letterOpenable(let id):
-            self.init(title: "A letter can be opened", detail: snapshot.letters.first { $0.id == id }?.label ?? "",
+            self.init(title: "Bir mektup açılabilir", detail: snapshot.letters.first { $0.id == id }?.label ?? "",
                       symbol: "envelope")
         case .moment:
-            self.init(title: "A new Moment", detail: "From \(partner).", symbol: "camera")
+            self.init(title: "Yeni bir An", detail: "Gönderen: \(partner).", symbol: "camera")
         }
     }
 

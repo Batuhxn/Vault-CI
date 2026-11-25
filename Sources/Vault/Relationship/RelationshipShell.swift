@@ -14,9 +14,9 @@ struct RelationshipShell: View {
 
         var title: String {
             switch self {
-            case .home: return "Home"
-            case .chat: return "Chat"
-            case .us: return "Us"
+            case .home: return "Ana Sayfa"
+            case .chat: return "Sohbet"
+            case .us: return "Biz"
             }
         }
 
@@ -219,7 +219,7 @@ private struct OpeningProxy: View {
 
 extension Person {
     var name: String { nickname.isEmpty ? displayName : nickname }
-    var shownName: String { name.isEmpty ? "Your partner" : name }
+    var shownName: String { name.isEmpty ? "Partnerin" : name }
     var initial: String { name.prefix(1).uppercased() }
 }
 
@@ -230,8 +230,8 @@ private struct SecurityNotice: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             SecurityStatusView(state: store.securityState, connected: store.connectionAvailable)
-            Text(store.canSend ? "Messages will send when the connection returns."
-                               : "Sending is paused until your partner joins.")
+            Text(store.canSend ? "Bağlantı dönünce mesajların gönderilecek."
+                               : "Partnerin katılana kadar gönderim duraklatıldı.")
                 .font(.caption)
                 .foregroundStyle(Room.noticeInk)
         }

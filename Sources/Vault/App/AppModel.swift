@@ -126,13 +126,13 @@ final class AppModel {
 
     static func describe(_ error: Error) -> String {
         switch error as? BackendError {
-        case .invalidCode: return "That code doesn't look right. Check all 8 characters."
-        case .codeExpired: return "That code has expired. Ask for a new one."
-        case .pairFull: return "That link is already complete or has expired."
-        case .photoTooLarge: return "That photo is too large."
-        case .notSignedIn: return "Please sign in first."
-        case .noPair: return "No link found."
-        case nil: return "Something went wrong. Check your connection and try again."
+        case .invalidCode: return "Bu kod doğru görünmüyor. 8 karakteri de kontrol et."
+        case .codeExpired: return "Bu kodun süresi dolmuş. Yeni bir kod iste."
+        case .pairFull: return "Bu bağlantı zaten tamamlanmış ya da süresi dolmuş."
+        case .photoTooLarge: return "Bu fotoğraf çok büyük."
+        case .notSignedIn: return "Önce giriş yapmalısın."
+        case .noPair: return "Bağlantı bulunamadı."
+        case nil: return "Bir şeyler ters gitti. Bağlantını kontrol edip tekrar dene."
         }
     }
 }

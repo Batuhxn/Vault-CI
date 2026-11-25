@@ -99,7 +99,7 @@ struct EncryptionLabel: View {
     let connected: Bool
 
     static func text(_ state: SecurityState, connected: Bool) -> String {
-        state == .secure && connected ? "Just the two of you" : SecurityStatusView.label(state, connected: connected)
+        state == .secure && connected ? "Sadece ikiniz" : SecurityStatusView.label(state, connected: connected)
     }
 
     var body: some View {

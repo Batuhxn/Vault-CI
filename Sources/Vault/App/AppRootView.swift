@@ -33,7 +33,7 @@ struct AppRootView: View {
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
-            Button("OK", role: .cancel) { }
+            Button("Tamam", role: .cancel) { }
         } message: { Text(model.errorMessage ?? "") }
     }
 }
@@ -47,8 +47,8 @@ private struct WelcomeScreen: View {
     var body: some View {
         ScreenScaffold {
             VStack(alignment: .leading, spacing: 0) {
-                HeadlineBlock(meta: "Watchlink", headline: "A quiet line,\nfor two.")
-                Text("One private space between your phone and theirs.")
+                HeadlineBlock(meta: "Watchlink", headline: "İki kişilik\nsessiz bir hat.")
+                Text("Senin telefonunla onunki arasında, sadece size ait bir alan.")
                     .font(.body)
                     .foregroundStyle(Room.ink2)
                     .padding(.horizontal, screenMargin)
@@ -66,7 +66,7 @@ private struct WelcomeScreen: View {
                           let token = AppleSignIn.token(from: authorization) else {
                         if case .failure(let error) = result,
                            (error as? ASAuthorizationError)?.code != .canceled {
-                            model.errorMessage = "Sign in with Apple didn't finish."
+                            model.errorMessage = "Apple ile giriş tamamlanamadı."
                         }
                         return
                     }
@@ -102,16 +102,16 @@ private struct PairScreen: View {
         ScreenScaffold {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    HeadlineBlock(meta: "Linking", headline: "Find each\nother.")
-                    Text("One of you makes a code. The other types it in.")
+                    HeadlineBlock(meta: "Bağlantı", headline: "Birbirinizi\nbulun.")
+                    Text("Biriniz kod oluştursun, diğeriniz o kodu girsin.")
                         .font(.body)
                         .foregroundStyle(Room.ink2)
                         .padding(.horizontal, screenMargin)
                         .padding(.top, 14)
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Your name").font(.footnote.weight(.semibold)).foregroundStyle(Room.sage)
-                        TextField("How your partner will see you", text: $model.myName)
+                        Text("Adın").font(.footnote.weight(.semibold)).foregroundStyle(Room.sage)
+                        TextField("Partnerin seni bu adla görecek", text: $model.myName)
                             .textContentType(.givenName)
                             .focused($focus, equals: .name)
                             .submitLabel(.done)
@@ -123,7 +123,7 @@ private struct PairScreen: View {
 
                     VStack(spacing: 12) {
                         Button { focus = nil; Task { await model.createCode() } } label: {
-                            Text("Make a code")
+                            Text("Kod oluştur")
                                 .font(.body.weight(.semibold))
                                 .foregroundStyle(Room.cream)
                                 .frame(maxWidth: .infinity, minHeight: 50)
@@ -131,10 +131,10 @@ private struct PairScreen: View {
                         }
                         .buttonStyle(Pressable())
 
-                        Text("or").wlWhisper().foregroundStyle(Room.ink3)
+                        Text("ya da").wlWhisper().foregroundStyle(Room.ink3)
 
                         HStack(spacing: 10) {
-                            TextField("Their code", text: $code)
+                            TextField("Onun kodu", text: $code)
                                 .textInputAutocapitalization(.characters)
                                 .autocorrectionDisabled()
                                 .font(.system(.title3, design: .monospaced).weight(.semibold))
@@ -142,7 +142,7 @@ private struct PairScreen: View {
                                 .padding(.horizontal, 16).frame(height: 50)
                                 .wlCard(radius: 18)
                                 .onChange(of: code) { _, value in code = String(value.uppercased().prefix(8)) }
-                            Button("Join") { focus = nil; Task { await model.join(code: code) } }
+                            Button("Katıl") { focus = nil; Task { await model.join(code: code) } }
                                 .font(.body.weight(.semibold))
                                 .foregroundStyle(Room.sageDeep)
                                 .frame(width: 80, height: 50)
@@ -155,7 +155,7 @@ private struct PairScreen: View {
                     .padding(.horizontal, screenMargin)
                     .padding(.top, 28)
 
-                    Button("Sign out") { model.signOut() }
+                    Button("Çıkış yap") { model.signOut() }
                         .font(.footnote)
                         .foregroundStyle(Room.ink3)
                         .frame(maxWidth: .infinity)
@@ -176,7 +176,7 @@ private struct WaitingScreen: View {
     var body: some View {
         ScreenScaffold {
             VStack(alignment: .leading, spacing: 0) {
-                HeadlineBlock(meta: "Your code", headline: "Waiting for\nthem.")
+                HeadlineBlock(meta: "Kodun", headline: "Onu\nbekliyoruz.")
                 Text(code.chunked(by: 4))
                     .font(.system(size: 38, weight: .semibold, design: .monospaced))
                     .foregroundStyle(Room.ink)
@@ -186,20 +186,20 @@ private struct WaitingScreen: View {
                     .wlCard()
                     .padding(.horizontal, screenMargin)
                     .padding(.top, 36)
-                Text("Type this on their phone. It works for 15 minutes.")
+                Text("Bu kodu onun telefonuna gir. 15 dakika geçerli.")
                     .font(.subheadline)
                     .foregroundStyle(Room.ink2)
                     .padding(.horizontal, screenMargin)
                     .padding(.top, 16)
                 HStack(spacing: 8) {
                     ProgressView().tint(Room.ink3).scaleEffect(0.8)
-                    Text("Listening for your partner").wlWhisper().foregroundStyle(Room.ink3)
+                    Text("Partnerin bekleniyor").wlWhisper().foregroundStyle(Room.ink3)
                 }
                 .padding(.horizontal, screenMargin)
                 .padding(.top, 12)
                 Spacer()
                 Button { model.cancelWaiting() } label: {
-                    Text("Cancel")
+                    Text("Vazgeç")
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Room.sageDeep)
                         .frame(maxWidth: .infinity, minHeight: 50)

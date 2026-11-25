@@ -188,11 +188,11 @@ enum StillHere: String, Codable, CaseIterable, Sendable {
 
     var text: String {
         switch self {
-        case .upsetButHere: return "I'm still upset, but I'm here."
-        case .notReadyToTalk: return "I'm not ready to talk yet."
-        case .stillLoveYou: return "I still love you."
-        case .openToPeace: return "I'm open to making peace."
-        case .closenessNotTalk: return "I want closeness, but not a conversation yet."
+        case .upsetButHere: return "Hâlâ kırgınım ama buradayım."
+        case .notReadyToTalk: return "Henüz konuşmaya hazır değilim."
+        case .stillLoveYou: return "Seni hâlâ seviyorum."
+        case .openToPeace: return "Barışmaya açığım."
+        case .closenessNotTalk: return "Yakınlık istiyorum ama henüz konuşma değil."
         }
     }
 }

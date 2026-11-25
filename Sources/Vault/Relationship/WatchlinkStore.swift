@@ -60,14 +60,14 @@ struct SecurityStatusView: View {
 
     static func label(_ state: SecurityState, connected: Bool) -> String {
         switch state {
-        case .secure: return connected ? "Connected" : "Offline"
-        case .identityChanged: return "Account changed"
-        case .sessionUpdatePending: return "Updating"
-        case .pairing: return "Waiting for partner"
-        case .establishingSecureSession: return "Connecting"
-        case .notPaired: return "Not paired"
-        case .unavailable: return "Unavailable"
-        case .error: return "Something went wrong"
+        case .secure: return connected ? "Bağlı" : "Çevrimdışı"
+        case .identityChanged: return "Hesap değişti"
+        case .sessionUpdatePending: return "Güncelleniyor"
+        case .pairing: return "Partner bekleniyor"
+        case .establishingSecureSession: return "Bağlanıyor"
+        case .notPaired: return "Eşleşmedi"
+        case .unavailable: return "Kullanılamıyor"
+        case .error: return "Bir şeyler ters gitti"
         }
     }
 }
@@ -150,7 +150,7 @@ final class WatchlinkStore {
 
     func sendPhoto(_ data: Data) async -> Bool {
         guard canSend, let image = UIImage(data: data), let jpeg = PhotoCompressor.jpeg(from: image) else { return false }
-        let message = LocalMessage(text: "Photo", isMine: true, delivery: .sending, kind: .photo(photoID: ""))
+        let message = LocalMessage(text: "Fotoğraf", isMine: true, delivery: .sending, kind: .photo(photoID: ""))
         enqueue(message) { backend, id, pairID in try await backend.sendPhoto(jpeg, id: id, pairID: pairID) }
         return true
     }
@@ -158,7 +158,7 @@ final class WatchlinkStore {
     func sendHeartbeat() {
         guard canSend else { return }
         let bpm = myBPM
-        let message = LocalMessage(text: "Heartbeat", isMine: true, delivery: .sending, kind: .heartbeat(bpm: bpm))
+        let message = LocalMessage(text: "Kalp atışı", isMine: true, delivery: .sending, kind: .heartbeat(bpm: bpm))
         enqueue(message) { backend, id, pairID in try await backend.sendHeartbeat(bpm: bpm, id: id, pairID: pairID) }
     }
 
@@ -214,8 +214,8 @@ final class WatchlinkStore {
             let text: String
             switch message.kind {
             case .text(let body): kind = .text; text = body
-            case .photo(let photoID): kind = .photo(photoID: photoID); text = "Photo"
-            case .heartbeat(let bpm): kind = .heartbeat(bpm: bpm); text = "Heartbeat"
+            case .photo(let photoID): kind = .photo(photoID: photoID); text = "Fotoğraf"
+            case .heartbeat(let bpm): kind = .heartbeat(bpm: bpm); text = "Kalp atışı"
             }
             return LocalMessage(id: Self.uuid(for: message.id), text: text, isMine: message.senderID == myID,
                                 timestamp: message.createdAt ?? Date(),

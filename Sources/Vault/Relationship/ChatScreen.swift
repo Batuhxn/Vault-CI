@@ -24,9 +24,9 @@ struct ChatScreen: View {
     /// not that the partner received it, so nothing here ever says "Delivered".
     static func deliveryLabel(_ delivery: DeliveryState) -> String {
         switch delivery {
-        case .pending, .sending: return "Sending"
-        case .sent, .delivered: return "Sent"
-        case .failed: return "Not sent"
+        case .pending, .sending: return "Gönderiliyor"
+        case .sent, .delivered: return "Gönderildi"
+        case .failed: return "Gönderilemedi"
         }
     }
 
@@ -51,8 +51,8 @@ struct ChatScreen: View {
         // The conversation keeps its height while typing.
         .toolbar(composing ? .hidden : .visible, for: .tabBar)
         .sensoryFeedback(RelationshipMotion.sendFeedback, trigger: sentCount)
-        .alert("Message not sent", isPresented: Binding(get: { sendProblem != nil }, set: { if !$0 { sendProblem = nil } })) {
-            Button("OK", role: .cancel) { }
+        .alert("Mesaj gönderilemedi", isPresented: Binding(get: { sendProblem != nil }, set: { if !$0 { sendProblem = nil } })) {
+            Button("Tamam", role: .cancel) { }
         } message: { Text(sendProblem ?? "") }
         .onChange(of: focusRequested, initial: true) { _, requested in
             guard requested else { return }
@@ -65,7 +65,7 @@ struct ChatScreen: View {
                 let data = try? await item.loadTransferable(type: Data.self)
                 pickedPhoto = nil
                 guard let data else { return }
-                if await store.sendPhoto(data) { sentCount += 1 } else { sendProblem = "That photo couldn't be prepared." }
+                if await store.sendPhoto(data) { sentCount += 1 } else { sendProblem = "Bu fotoğraf hazırlanamadı." }
             }
         }
     }
@@ -81,7 +81,7 @@ struct ChatScreen: View {
                     .contentShape(Circle())
             }
             .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
-            .accessibilityLabel("Send a photo")
+            .accessibilityLabel("Fotoğraf gönder")
             Button {
                 withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) {
                     store.sendHeartbeat()
@@ -95,7 +95,7 @@ struct ChatScreen: View {
                     .contentShape(Circle())
             }
             .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
-            .accessibilityLabel("Send your heartbeat")
+            .accessibilityLabel("Kalp atışını gönder")
         }
         .disabled(!store.canSend)
         .padding(.bottom, 4)
@@ -115,7 +115,7 @@ struct ChatScreen: View {
                     .contentShape(Circle())
             }
             .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
-            .accessibilityLabel("Private Space")
+            .accessibilityLabel("Özel Alan")
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onMoonFrame($0) }
         }
         .padding(.leading, screenMargin)
@@ -135,7 +135,7 @@ struct ChatScreen: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if runs.isEmpty {
-                        Text("The first word is yours.")
+                        Text("İlk söz senin.")
                             .wlWhisper(size: 17)
                             .foregroundStyle(Room.ink3)
                             .frame(maxWidth: .infinity)
@@ -167,7 +167,7 @@ struct ChatScreen: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .bottom, spacing: 8) {
                 if !composing { attachments }
-                TextField(store.canSend ? partner.writeTo : "Messaging paused", text: $draft, axis: .vertical)
+                TextField(store.canSend ? partner.writeTo : "Mesajlaşma duraklatıldı", text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     .font(.body)
                     .foregroundStyle(Room.ink)
@@ -183,7 +183,7 @@ struct ChatScreen: View {
                             .background(Room.sage, in: Circle())
                     }
                     .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
-                    .accessibilityLabel("Send")
+                    .accessibilityLabel("Gönder")
                     .padding(.bottom, 4)
                     // Send is never greyed out: it emerges when there is something to send.
                     .wlTransition(.scale(scale: 0.6).combined(with: .opacity), reduceMotion: reduceMotion)
@@ -200,7 +200,7 @@ struct ChatScreen: View {
                     .shadow(color: Room.ink.opacity(composing ? 0.14 : 0.06), radius: composing ? 16 : 9, y: composing ? 10 : 6)
             }
             if tooLong {
-                Text("That's too long to send as one message.")
+                Text("Tek mesaj için çok uzun.")
                     .font(.caption)
                     .foregroundStyle(Room.ink3)
                     .padding(.leading, 16)
@@ -234,15 +234,15 @@ struct ChatScreen: View {
         case .failure(.transportFailed):
             break  // the store shows it as "Not sent"; the words stay in the field, never retried as plaintext
         case .failure(.messageTooLarge):
-            sendProblem = "That message is too long to send."
+            sendProblem = "Bu mesaj gönderilemeyecek kadar uzun."
         case .failure:
-            sendProblem = "Sending is paused until the secure link is ready."
+            sendProblem = "Partnerin katılana kadar gönderim duraklatıldı."
         }
     }
 }
 
 extension Person {
-    var writeTo: String { initial.isEmpty ? "Write a message" : "Write to \(shownName)" }
+    var writeTo: String { initial.isEmpty ? "Bir mesaj yaz" : "\(shownName) için yaz" }
 }
 
 /// Consecutive messages from one sender within five minutes, on one day.
@@ -285,9 +285,9 @@ struct MessageRun: Identifiable, Equatable {
     }
 
     static func dayLabel(_ date: Date, calendar: Calendar, now: Date) -> String {
-        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
+        if calendar.isDate(date, inSameDayAs: now) { return "Bugün" }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
-            return "Yesterday"
+            return "Dün"
         }
         return date.formatted(.dateTime.weekday(.wide).day().month(.wide))
     }
@@ -365,10 +365,10 @@ struct ConversationBubble: View {
                     .padding(.vertical, 10)
                     .background(message.isMine ? Room.mine : Room.paper, in: shape)
                     .overlay { if !message.isMine { shape.stroke(Room.ink.opacity(0.06), lineWidth: 1) } }
-                    .accessibilityLabel(message.isMine ? "You: \(message.text)" : message.text)
+                    .accessibilityLabel(message.isMine ? "Sen: \(message.text)" : message.text)
             case .photo(let photoID):
                 PhotoBubble(photoID: photoID, shape: shape)
-                    .accessibilityLabel(message.isMine ? "You sent a photo" : "Photo")
+                    .accessibilityLabel(message.isMine ? "Bir fotoğraf gönderdin" : "Fotoğraf")
             case .heartbeat(let bpm):
                 HeartbeatBubble(bpm: bpm, mine: message.isMine, shape: shape)
             }
@@ -417,7 +417,7 @@ private struct PhotoBubble: View {
                     Image(systemName: "xmark").font(.body.weight(.semibold))
                         .foregroundStyle(Room.nightText).frame(width: 44, height: 44)
                 }
-                .accessibilityLabel("Close")
+                .accessibilityLabel("Kapat")
                 .padding()
             }
         }
@@ -435,7 +435,7 @@ private struct HeartbeatBubble: View {
         Button { try? player.play(bpm: Double(bpm), duration: 8) } label: {
             HStack(spacing: 8) {
                 Image(systemName: "heart.fill").foregroundStyle(Room.sage)
-                Text(mine ? "Your heartbeat" : "A heartbeat").foregroundStyle(Room.ink)
+                Text(mine ? "Kalp atışın" : "Bir kalp atışı").foregroundStyle(Room.ink)
                 Text("\(bpm) bpm").font(.footnote).foregroundStyle(Room.ink3)
             }
             .font(.body)
@@ -444,6 +444,6 @@ private struct HeartbeatBubble: View {
             .background(Room.mist, in: shape)
         }
         .buttonStyle(Pressable())
-        .accessibilityLabel(mine ? "Your heartbeat, \(bpm) beats per minute" : "A heartbeat, \(bpm) beats per minute. Tap to feel it.")
+        .accessibilityLabel(mine ? "Kalp atışın, dakikada \(bpm) atım" : "Bir kalp atışı, dakikada \(bpm) atım. Hissetmek için dokun.")
     }
 }

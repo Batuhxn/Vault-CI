@@ -29,7 +29,7 @@ struct PrivateSpaceLayer: View {
                     .opacity(progress)
                     // Content arrives from the moon's direction.
                     .offset(x: reduceMotion ? 0 : 40 * (1 - progress), y: reduceMotion ? 0 : -40 * (1 - progress))
-                Text("Tap the moon to return")
+                Text("Dönmek için aya dokun")
                     .font(.footnote)
                     .foregroundStyle(Room.nightSecondary.opacity(0.8))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -58,19 +58,19 @@ struct PrivateSpaceLayer: View {
 
     private var preview: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("A quieter room")
+            Text("Daha sessiz bir oda")
                 .font(.footnote)
                 .foregroundStyle(Room.nightSecondary)
-            Text("Private\nSpace.")
+            Text("Özel\nAlan.")
                 .wlDisplay()
                 .foregroundStyle(Room.nightText)
                 .accessibilityAddTraits(.isHeader)
-            Text("A quieter room inside Watchlink, for what you keep only between the two of you.")
+            Text("Watchlink içinde, sadece ikiniz arasında kalanlar için daha sessiz bir oda.")
                 .font(.body)
                 .foregroundStyle(Room.nightSecondary)
                 .frame(maxWidth: 290, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Not open yet")
+            Text("Henüz açık değil")
                 .font(.footnote)
                 .foregroundStyle(Room.nightText.opacity(0.8))
                 .padding(.horizontal, 14)
@@ -94,6 +94,6 @@ struct PrivateSpaceLayer: View {
                 .contentShape(Circle())
         }
         .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
-        .accessibilityLabel("Leave Private Space")
+        .accessibilityLabel("Özel Alan'dan çık")
     }
 }

@@ -477,80 +477,121 @@ private struct HeartbeatBubble: View {
     }
 }
 
-/// Full-screen photo: pinch to zoom (1x–5x), drag to pan while zoomed,
-/// double-tap to toggle 2.5x, swipe down at 1x to close.
-private struct ZoomablePhoto: View {
+/// Full-screen photo on a native UIScrollView, so it feels like Photos/WhatsApp:
+/// the pinch is anchored under the fingers, two fingers pan while zooming,
+/// edges bounce, double-tap zooms to the tapped point, and a downward swipe at
+/// normal size closes it.
+private struct ZoomablePhoto: UIViewRepresentable {
     let image: UIImage
     let close: () -> Void
 
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
-    @State private var dismissDrag: CGFloat = 0
+    func makeCoordinator() -> Coordinator { Coordinator(close: close) }
 
-    var body: some View {
-        GeometryReader { geometry in
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .scaleEffect(scale)
-                .offset(x: offset.width, y: offset.height + dismissDrag)
-                .opacity(1 - min(dismissDrag / 400, 0.5))
-                .gesture(magnify(in: geometry.size).simultaneously(with: drag(in: geometry.size)))
-                .onTapGesture(count: 2) {
-                    withAnimation(RelationshipMotion.soft) {
-                        if scale > 1 { reset() } else { scale = 2.5; lastScale = 2.5 }
-                    }
-                }
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = UIScrollView()
+        scroll.delegate = context.coordinator
+        scroll.maximumZoomScale = 5
+        scroll.minimumZoomScale = 1
+        scroll.bouncesZoom = true
+        scroll.showsVerticalScrollIndicator = false
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.contentInsetAdjustmentBehavior = .never
+        scroll.backgroundColor = .clear
+
+        let imageView = UIImageView(image: image)
+        imageView.contentMode = .scaleAspectFit
+        imageView.isUserInteractionEnabled = true
+        scroll.addSubview(imageView)
+        context.coordinator.imageView = imageView
+        context.coordinator.scrollView = scroll
+
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTapped(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        scroll.addGestureRecognizer(doubleTap)
+
+        let dismiss = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.dismissPan(_:)))
+        dismiss.delegate = context.coordinator
+        scroll.addGestureRecognizer(dismiss)
+        return scroll
+    }
+
+    func updateUIView(_ scroll: UIScrollView, context: Context) {
+        context.coordinator.layout()
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+        let close: () -> Void
+        weak var imageView: UIImageView?
+        weak var scrollView: UIScrollView?
+        private var laidOutSize: CGSize = .zero
+
+        init(close: @escaping () -> Void) { self.close = close }
+
+        /// Fit the image to the screen at zoom 1; re-run when the bounds change.
+        func layout() {
+            guard let scroll = scrollView, let imageView, let image = imageView.image else { return }
+            let bounds = scroll.bounds.size
+            guard bounds.width > 0, bounds != laidOutSize else { return }
+            laidOutSize = bounds
+            scroll.zoomScale = 1
+            let ratio = min(bounds.width / image.size.width, bounds.height / image.size.height)
+            imageView.frame = CGRect(x: 0, y: 0, width: image.size.width * ratio, height: image.size.height * ratio)
+            scroll.contentSize = imageView.frame.size
+            center()
         }
-        .ignoresSafeArea()
-        .accessibilityLabel("Fotoğraf")
-        .accessibilityHint("Yakınlaştırmak için iki kez dokun")
-    }
 
-    private func magnify(in size: CGSize) -> some Gesture {
-        MagnifyGesture()
-            .onChanged { value in scale = min(max(lastScale * value.magnification, 1), 5) }
-            .onEnded { _ in
-                lastScale = scale
-                if scale <= 1.01 { withAnimation(RelationshipMotion.soft) { reset() } }
-                else { withAnimation(RelationshipMotion.soft) { clamp(in: size) } }
-            }
-    }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+        func scrollViewDidZoom(_ scrollView: UIScrollView) { center() }
+        func scrollViewDidLayoutSubviews(_ scrollView: UIScrollView) { layout() }
 
-    private func drag(in size: CGSize) -> some Gesture {
-        DragGesture()
-            .onChanged { value in
-                if scale > 1 {
-                    offset = CGSize(width: lastOffset.width + value.translation.width,
-                                    height: lastOffset.height + value.translation.height)
-                } else {
-                    dismissDrag = max(value.translation.height, 0)
-                }
+        /// Keeps a smaller-than-screen image centred instead of pinned top-left.
+        private func center() {
+            guard let scroll = scrollView, let imageView else { return }
+            let x = max((scroll.bounds.width - imageView.frame.width) / 2, 0)
+            let y = max((scroll.bounds.height - imageView.frame.height) / 2, 0)
+            scroll.contentInset = UIEdgeInsets(top: y, left: x, bottom: y, right: x)
+        }
+
+        @objc func doubleTapped(_ gesture: UITapGestureRecognizer) {
+            guard let scroll = scrollView, let imageView else { return }
+            if scroll.zoomScale > scroll.minimumZoomScale {
+                scroll.setZoomScale(scroll.minimumZoomScale, animated: true)
+            } else {
+                let point = gesture.location(in: imageView)
+                let scale: CGFloat = 2.5
+                let size = CGSize(width: scroll.bounds.width / scale, height: scroll.bounds.height / scale)
+                scroll.zoom(to: CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                                       width: size.width, height: size.height), animated: true)
             }
-            .onEnded { value in
-                if scale > 1 {
-                    lastOffset = offset
-                    withAnimation(RelationshipMotion.soft) { clamp(in: size) }
-                } else if value.translation.height > 120 {
+        }
+
+        /// Swipe down at normal size: the photo follows the finger, then closes or settles back.
+        @objc func dismissPan(_ gesture: UIPanGestureRecognizer) {
+            guard let scroll = scrollView, let imageView else { return }
+            let dy = max(gesture.translation(in: scroll).y, 0)
+            switch gesture.state {
+            case .changed:
+                imageView.transform = CGAffineTransform(translationX: 0, y: dy)
+                scroll.alpha = 1 - min(dy / 600, 0.4)
+            case .ended, .cancelled:
+                if dy > 120 || gesture.velocity(in: scroll).y > 900 {
                     close()
                 } else {
-                    withAnimation(RelationshipMotion.soft) { dismissDrag = 0 }
+                    UIView.animate(withDuration: 0.25) {
+                        imageView.transform = .identity
+                        scroll.alpha = 1
+                    }
                 }
+            default: break
             }
-    }
+        }
 
-    /// Keeps the zoomed image covering the screen edge it was dragged past.
-    private func clamp(in size: CGSize) {
-        let maxX = size.width * (scale - 1) / 2
-        let maxY = size.height * (scale - 1) / 2
-        offset = CGSize(width: min(max(offset.width, -maxX), maxX), height: min(max(offset.height, -maxY), maxY))
-        lastOffset = offset
-    }
-
-    private func reset() {
-        scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero; dismissDrag = 0
+        /// The dismiss pan only starts at normal size, moving mostly downward.
+        func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            guard let pan = gesture as? UIPanGestureRecognizer, pan.view === scrollView, pan !== scrollView?.panGestureRecognizer,
+                  let scroll = scrollView else { return true }
+            let velocity = pan.velocity(in: scroll)
+            return scroll.zoomScale <= scroll.minimumZoomScale + 0.01 && velocity.y > abs(velocity.x)
+        }
     }
 }

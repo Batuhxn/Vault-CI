@@ -152,6 +152,26 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          # Signing must apply to the app target only: Swift package resource
+          # bundles (Firebase, gRPC, ...) reject a manually specified profile, so
+          # it can't be passed on the xcodebuild command line (that hits every
+          # target). Scope it to Vault-App's Release config and regenerate.
+          python3 - <<'PY'
+          import os, pathlib
+          spec = pathlib.Path("project.yml")
+          text = spec.read_text()
+          anchor = '        Release:\n          SWIFT_OPTIMIZATION_LEVEL: "-O"\n'
+          assert text.count(anchor) == 1, "Vault-App Release config anchor not found"
+          signing = "".join(f'          {key}: "{value}"\n' for key, value in [
+              ("DEVELOPMENT_TEAM", os.environ["APPLE_TEAM_ID"]),
+              ("CODE_SIGN_STYLE", "Manual"),
+              ("CODE_SIGN_IDENTITY", "Apple Distribution"),
+              ("PROVISIONING_PROFILE_SPECIFIER", os.environ["PROFILE_NAME"]),
+              ("OTHER_CODE_SIGN_FLAGS", "--keychain " + os.environ["KEYCHAIN_PATH"]),
+          ])
+          spec.write_text(text.replace(anchor, anchor + signing))
+          PY
+          xcodegen generate --spec project.yml
           xcodebuild archive \
             -project Vault.xcodeproj \
             -scheme Vault-App \
@@ -159,14 +179,8 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Watchlink.xcarchive" \
             -derivedDataPath "$RUNNER_TEMP/watchlink-derived" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="Apple Distribution" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
-            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             MARKETING_VERSION=0.1.0 \
-            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
           test -d "$RUNNER_TEMP/Watchlink.xcarchive/Products/Applications/Vault-App.app" \
             || { echo "::error::archive has no Vault-App.app"; exit 1; }
 

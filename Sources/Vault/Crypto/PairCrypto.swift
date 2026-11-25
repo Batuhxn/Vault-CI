@@ -4,9 +4,9 @@ import Security
 
 /// End-to-end encryption for one pair, built only on Apple's CryptoKit.
 ///
-/// - Each device keeps an X25519 identity key in its Keychain (this device only,
-///   never synced, never uploaded). Only the 32-byte public key is published,
-///   inside the pair document, at pairing time.
+/// - Each member keeps an X25519 identity key in iCloud Keychain (end-to-end
+///   encrypted by Apple; never uploaded to our server). Only the 32-byte public
+///   key is published, inside the pair document, at pairing time.
 /// - Both phones derive the same 256-bit key: X25519 shared secret ->
 ///   HKDF-SHA256 (salt: pair id, info: version + both public keys).
 /// - Everything the server stores for the pair (message payloads, photos,
@@ -16,8 +16,9 @@ import Security
 /// - A short safety code (SHA-256 of both public keys) lets the two people
 ///   check, side by side, that nobody swapped a key in between.
 ///
-/// Limits (MVP): one long-term key per pair, no forward secrecy. Deleting the
-/// app deletes the key; the pair then has to link again.
+/// Limits (MVP): one long-term key per pair, no forward secrecy. With iCloud
+/// Keychain on, reinstalling or moving to a new iPhone keeps the key; with it
+/// off, deleting the app deletes the key and the pair has to link again.
 enum PairCrypto {
     static let version = "wl1"
 
@@ -28,35 +29,54 @@ enum PairCrypto {
     /// This device's identity for `userID`, created on first use.
     static func identity(for userID: String) throws -> Curve25519.KeyAgreement.PrivateKey {
         if let existing = try storedIdentity(for: userID) { return existing }
-        let key = Curve25519.KeyAgreement.PrivateKey()
-        try store(key, for: userID)
+        try store(Curve25519.KeyAgreement.PrivateKey(), for: userID)
+        // Read back: if iCloud delivered a key in the meantime, that one wins.
+        guard let key = try storedIdentity(for: userID) else { throw Failure.missingKey }
         return key
     }
 
+    /// The identity lives in iCloud Keychain (end-to-end encrypted by Apple),
+    /// so a reinstall or a new iPhone signed in to the same Apple Account gets
+    /// the same key back and the conversation history stays readable. With
+    /// iCloud Keychain off it simply stays on this device.
     static func storedIdentity(for userID: String) throws -> Curve25519.KeyAgreement.PrivateKey? {
-        var query = baseQuery(userID)
+        if let data = try read(userID, synced: true) {
+            return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
+        }
+        // Builds before 0.1.2 kept a device-only copy: move it into iCloud Keychain.
+        guard let legacy = try read(userID, synced: false) else { return nil }
+        let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: legacy)
+        if (try? store(key, for: userID)) != nil {
+            SecItemDelete(baseQuery(userID, synced: false) as CFDictionary)
+        }
+        return key
+    }
+
+    private static func read(_ userID: String, synced: Bool) throws -> Data? {
+        var query = baseQuery(userID, synced: synced)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = item as? Data else { throw Failure.keychain(status) }
-        return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
+        return data
     }
 
     private static func store(_ key: Curve25519.KeyAgreement.PrivateKey, for userID: String) throws {
-        var query = baseQuery(userID)
+        var query = baseQuery(userID, synced: true)
         query[kSecValueData as String] = key.rawRepresentation
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        // Synced items can't be "this device only"; still unreadable until first unlock.
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw Failure.keychain(status) }
+        guard status == errSecSuccess || status == errSecDuplicateItem else { throw Failure.keychain(status) }
     }
 
-    private static func baseQuery(_ userID: String) -> [String: Any] {
+    private static func baseQuery(_ userID: String, synced: Bool) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.batuhxn.watchlink.identity",
          kSecAttrAccount as String: userID,
-         kSecAttrSynchronizable as String: false]
+         kSecAttrSynchronizable as String: synced]
     }
 
     // MARK: Session
@@ -85,6 +105,7 @@ enum PairCrypto {
         // Authenticated-data labels, one per kind of blob.
         func messageAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|msg|\(pairID)|\(sender)|\(id)" }
         func photoAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|photo|\(pairID)|\(sender)|\(id)" }
+        func voiceAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|voice|\(pairID)|\(sender)|\(id)" }
         func profileAAD(of member: String) -> String { "\(PairCrypto.version)|profile|\(pairID)|\(member)" }
 
         /// The raw pair key, handed to the notification extension through the
@@ -129,11 +150,15 @@ enum PairCrypto {
 
 /// What a sealed message says. The server sees none of it, not even the kind.
 struct SealedPayload: Codable, Equatable {
-    /// "text" | "photo" | "heartbeat" | "private" (Özel Alan: pushes never show what it is).
+    /// "text" | "photo" | "heartbeat" | "voice" | "private" (Özel Alan: pushes never show what it is).
     var kind: String
     var text: String?
     var photoID: String?
     var bpm: Int?
+    /// Voice: the sealed audio blob's id, its length, and 40 waveform bars (0...255).
+    var voiceID: String?
+    var seconds: Double?
+    var wave: [UInt8]?
 }
 
 /// A member's sealed profile: the name they chose, their recorded rhythm and

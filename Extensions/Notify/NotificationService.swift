@@ -52,6 +52,9 @@ final class NotificationService: UNNotificationServiceExtension {
         case "heartbeat":
             content.body = payload.bpm.map { "💓 Kalp atışını gönderdi · \($0) BPM" } ?? "💓 Kalp atışını gönderdi"
             content.sound = UNNotificationSound(named: UNNotificationSoundName("heartbeat.wav"))
+        case "voice":
+            let seconds = Int((payload.seconds ?? 0).rounded())
+            content.body = "🎤 Sesli mesaj · \(seconds / 60):\(String(format: "%02d", seconds % 60))"
         case "private":
             content.body = "🌙 Özel Alan'da bir şey var"
         default:

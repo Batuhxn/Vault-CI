@@ -28,6 +28,7 @@ struct LocalMessage: Identifiable, Equatable {
         case text
         case photo(photoID: String)
         case heartbeat(bpm: Int)
+        case voice(voiceID: String, seconds: Double, wave: [UInt8])
     }
 
     let id: UUID
@@ -115,6 +116,7 @@ final class WatchlinkStore {
     @ObservationIgnored private var seen = Set<String>()
     @ObservationIgnored private var firstSnapshot = true
     @ObservationIgnored private let photoCache = NSCache<NSString, UIImage>()
+    @ObservationIgnored private var voiceCache: [String: Data] = [:]
 
     init(backend: any ChatBackend, pair: PairInfo, myID: String, session: PairCrypto.Session) {
         self.backend = backend
@@ -219,6 +221,34 @@ final class WatchlinkStore {
         enqueue(message, SealedPayload(kind: "heartbeat", bpm: bpm))
     }
 
+    /// Seals and sends a voice message; the audio travels like a photo (its own
+    /// sealed blob, bound to its id and sender), the message carries its length
+    /// and waveform so the bubble draws at once.
+    func sendVoice(_ recording: VoiceRecorder.Recording) -> Bool {
+        guard canSend else { return false }
+        let voiceID = UUID().uuidString
+        guard let sealed = try? session.seal(recording.data, aad: session.voiceAAD(id: voiceID, sender: myID)),
+              sealed.count <= PhotoCompressor.maxBytes else { return false }
+        voiceCache[voiceID] = recording.data
+        photoSenders[voiceID] = myID
+        let message = LocalMessage(text: "Sesli mesaj", isMine: true, delivery: .sending,
+                                   kind: .voice(voiceID: voiceID, seconds: recording.seconds, wave: recording.wave))
+        enqueue(message, SealedPayload(kind: "voice", voiceID: voiceID, seconds: recording.seconds, wave: recording.wave)) { backend, pairID in
+            try await backend.uploadSealedPhoto(sealed, id: voiceID, pairID: pairID)
+        }
+        return true
+    }
+
+    /// The opened audio of a voice message (downloaded once, then kept for the session).
+    func voice(for voiceID: String) async -> Data? {
+        if let cached = voiceCache[voiceID] { return cached }
+        guard let sender = photoSenders[voiceID],
+              let sealed = try? await backend.loadSealedPhoto(id: voiceID, pairID: pair.id),
+              let data = try? session.open(sealed, aad: session.voiceAAD(id: voiceID, sender: sender)) else { return nil }
+        voiceCache[voiceID] = data
+        return data
+    }
+
     // MARK: Photos
 
     func image(for photoID: String) async -> UIImage? {
@@ -276,6 +306,7 @@ final class WatchlinkStore {
             .flatMap { try? JSONDecoder().decode(SealedPayload.self, from: $0) }
         opened[message.id] = payload
         if let photoID = payload?.photoID { photoSenders[photoID] = message.senderID }
+        if let voiceID = payload?.voiceID { photoSenders[voiceID] = message.senderID }
         return payload
     }
 
@@ -304,6 +335,10 @@ final class WatchlinkStore {
                 kind = .photo(photoID: payload.photoID ?? ""); text = "Fotoğraf"
             case let payload? where payload.kind == "heartbeat":
                 kind = .heartbeat(bpm: payload.bpm ?? 72); text = "Kalp atışı"
+            case let payload? where payload.kind == "voice" && payload.voiceID != nil:
+                kind = .voice(voiceID: payload.voiceID ?? "", seconds: payload.seconds ?? 0,
+                              wave: payload.wave ?? VoiceRecorder.wave([], bars: 40))
+                text = "Sesli mesaj"
             default:
                 kind = .text; text = "🔒 Bu mesaj bu telefonda açılamadı."
             }

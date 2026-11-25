@@ -66,6 +66,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UIRequiresFullScreen: "YES"
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Sesli mesaj kaydetmek için mikrofonu kullanır. Kayıt telefonunda şifrelenir, sadece partnerin dinleyebilir."
         # Export compliance (answered for build 7): standard algorithms only - TLS
         # (Firebase/gRPC) and, from build 12, Apple CryptoKit (X25519, HKDF-SHA256,
         # ChaCha20-Poly1305) for end-to-end encryption; not distributed in France.

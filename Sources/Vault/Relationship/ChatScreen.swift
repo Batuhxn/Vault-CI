@@ -21,6 +21,12 @@ struct ChatScreen: View {
     @State private var pickedPhoto: PhotosPickerItem?
     /// Whether the end of the transcript is on screen (incoming messages only follow then).
     @State private var atBottom = true
+    /// Voice: hold the mic to record, release to send, slide left to cancel.
+    @State private var recorder = VoiceRecorder()
+    @State private var micHeld = false
+    @State private var micSlide: CGFloat = 0
+    @State private var micHint = false
+    private static let cancelDistance: CGFloat = 90
     @FocusState private var composing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -66,6 +72,10 @@ struct ChatScreen: View {
                 }
         )
         .sensoryFeedback(RelationshipMotion.sendFeedback, trigger: sentCount)
+        .onDisappear {
+            VoicePlayer.shared.stop()
+            recorder.cancel()
+        }
         .alert("Mesaj gönderilemedi", isPresented: Binding(get: { sendProblem != nil }, set: { if !$0 { sendProblem = nil } })) {
             Button("Tamam", role: .cancel) { }
         } message: { Text(sendProblem ?? "") }
@@ -221,14 +231,21 @@ struct ChatScreen: View {
         let tooLong = draft.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count > WatchlinkStore.maxMessageBytes
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .bottom, spacing: 8) {
-                if !composing { attachments }
-                TextField(store.canSend ? partner.writeTo : "Mesajlaşma duraklatıldı", text: $draft, axis: .vertical)
-                    .lineLimit(1...5)
-                    .font(.body)
-                    .foregroundStyle(Room.ink)
-                    .focused($composing)
-                    .disabled(!store.canSend)
-                    .padding(.vertical, 11)
+                if recorder.isRecording {
+                    RecordingStrip(elapsed: recorder.elapsed, levels: recorder.levels,
+                                   slide: micSlide, cancelDistance: Self.cancelDistance)
+                        .wlTransition(.opacity, reduceMotion: reduceMotion)
+                } else {
+                    if !composing { attachments }
+                    TextField(store.canSend ? partner.writeTo : "Mesajlaşma duraklatıldı", text: $draft, axis: .vertical)
+                        .lineLimit(1...5)
+                        .font(.body)
+                        .foregroundStyle(Room.ink)
+                        .focused($composing)
+                        .disabled(!store.canSend)
+                        .padding(.vertical, 11)
+                }
+                // The mic keeps its place (and identity) while recording, so the hold isn't lost.
                 if ready {
                     Button(action: send) {
                         Image(systemName: "arrow.up")
@@ -242,6 +259,9 @@ struct ChatScreen: View {
                     .padding(.bottom, 4)
                     // Send is never greyed out: it emerges when there is something to send.
                     .wlTransition(.scale(scale: 0.6).combined(with: .opacity), reduceMotion: reduceMotion)
+                } else if store.canSend {
+                    micButton
+                        .wlTransition(.scale(scale: 0.6).combined(with: .opacity), reduceMotion: reduceMotion)
                 }
             }
             .padding(.leading, composing ? 16 : 6)
@@ -253,6 +273,13 @@ struct ChatScreen: View {
                     .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .stroke(composing ? Room.sage.opacity(0.3) : Room.ink.opacity(0.07), lineWidth: 1))
                     .shadow(color: Room.ink.opacity(composing ? 0.14 : 0.06), radius: composing ? 16 : 9, y: composing ? 10 : 6)
+            }
+            if micHint {
+                Text("Kaydetmek için basılı tut, göndermek için bırak.")
+                    .font(.caption)
+                    .foregroundStyle(Room.ink3)
+                    .padding(.leading, 16)
+                    .wlTransition(.opacity, reduceMotion: reduceMotion)
             }
             if tooLong {
                 Text("Tek mesaj için çok uzun.")
@@ -271,6 +298,79 @@ struct ChatScreen: View {
         }
         .animation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion), value: composing)
         .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: ready)
+        .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: recorder.isRecording)
+        .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: micHint)
+        .sensoryFeedback(.impact(weight: .medium), trigger: recorder.isRecording)
+        .task { recorder.onLimit = { finishRecording(send: true) } }
+    }
+
+    private var micButton: some View {
+        let recording = recorder.isRecording
+        return Image(systemName: recording ? "mic.fill" : "mic")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(recording ? Room.cream : Room.sageDeep)
+            .frame(width: 36, height: 36)
+            .background(recording ? Room.sage : Color.clear, in: Circle())
+            .scaleEffect(recording && !reduceMotion ? 1.3 : 1)
+            .frame(width: 44, height: 44)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !micHeld {
+                            micHeld = true
+                            beginRecording()
+                        }
+                        micSlide = min(0, value.translation.width)
+                    }
+                    .onEnded { value in
+                        micHeld = false
+                        finishRecording(send: value.translation.width > -Self.cancelDistance)
+                        micSlide = 0
+                    }
+            )
+            .accessibilityElement()
+            .accessibilityLabel(recording ? "Kaydı gönder" : "Sesli mesaj kaydet")
+            .accessibilityAddTraits(.isButton)
+            // VoiceOver can't hold and slide: a double-tap starts, another sends.
+            .accessibilityAction {
+                if recorder.isRecording { finishRecording(send: true) } else { beginRecording() }
+            }
+            .padding(.bottom, 4)
+    }
+
+    private func beginRecording() {
+        composing = false
+        VoicePlayer.shared.stop()
+        Task {
+            guard await recorder.start() else {
+                micHeld = false
+                sendProblem = "Mikrofona erişilemedi. Ayarlar → Watchlink → Mikrofon'dan izin verebilirsin."
+                return
+            }
+            // Let go before recording began (a tap, or the permission prompt): nothing to send.
+            if !micHeld && !UIAccessibility.isVoiceOverRunning {
+                recorder.cancel()
+                showMicHint()
+            }
+        }
+    }
+
+    private func finishRecording(send: Bool) {
+        guard recorder.isRecording else { return }
+        guard send else { recorder.cancel(); return }
+        guard let recording = recorder.stop() else { showMicHint(); return }
+        withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) {
+            if store.sendVoice(recording) { sentCount += 1 } else { sendProblem = "Sesli mesaj gönderilemedi." }
+        }
+    }
+
+    private func showMicHint() {
+        micHint = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            micHint = false
+        }
     }
 
     /// The Letter. Nothing enters the transcript here: the store appends only
@@ -426,6 +526,8 @@ struct ConversationBubble: View {
                     .accessibilityLabel(message.isMine ? "Bir fotoğraf gönderdin" : "Fotoğraf")
             case .heartbeat(let bpm):
                 HeartbeatBubble(bpm: bpm, mine: message.isMine, shape: shape)
+            case .voice(let voiceID, let seconds, let wave):
+                VoiceBubble(voiceID: voiceID, seconds: seconds, wave: wave, mine: message.isMine, shape: shape)
             }
         }
         .containerRelativeFrame(.horizontal, alignment: message.isMine ? .trailing : .leading) { width, _ in width * 0.76 }
@@ -501,6 +603,132 @@ private struct HeartbeatBubble: View {
         .buttonStyle(Pressable())
         .accessibilityLabel(mine ? "Kalp atışın, dakikada \(bpm) atım" : "Bir kalp atışı, dakikada \(bpm) atım. Hissetmek için dokun.")
     }
+}
+
+/// A voice message: play/pause, the waveform filling as it plays, and its length.
+private struct VoiceBubble: View {
+    let voiceID: String
+    let seconds: Double
+    let wave: [UInt8]
+    let mine: Bool
+    let shape: UnevenRoundedRectangle
+    @Environment(WatchlinkStore.self) private var store
+    @State private var loading = false
+    @State private var failed = false
+
+    var body: some View {
+        let player = VoicePlayer.shared
+        let playing = player.playingID == voiceID
+        HStack(spacing: 10) {
+            Button { Task { await toggle() } } label: {
+                ZStack {
+                    if loading {
+                        ProgressView().tint(Room.cream)
+                    } else {
+                        Image(systemName: failed ? "exclamationmark" : (playing ? "pause.fill" : "play.fill"))
+                            .font(.footnote.weight(.bold))
+                    }
+                }
+                .foregroundStyle(Room.cream)
+                .frame(width: 34, height: 34)
+                .background(Room.sage, in: Circle())
+            }
+            .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
+            WaveBars(levels: wave.map { Float($0) / 255 }, progress: playing ? player.progress : 0)
+                .frame(height: 26)
+            Text(voiceTime(playing ? seconds * player.progress : seconds))
+                .font(.footnote.monospacedDigit())
+                .foregroundStyle(Room.ink3)
+                .frame(minWidth: 34, alignment: .trailing)
+        }
+        .padding(.leading, 8)
+        .padding(.trailing, 14)
+        .padding(.vertical, 8)
+        .background(mine ? Room.mine : Room.paper, in: shape)
+        .overlay { if !mine { shape.stroke(Room.ink.opacity(0.06), lineWidth: 1) } }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(mine ? "Sesli mesajın" : "Sesli mesaj"), \(Int(seconds.rounded())) saniye")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { Task { await toggle() } }
+    }
+
+    private func toggle() async {
+        let player = VoicePlayer.shared
+        if player.playingID == voiceID { player.stop(); return }
+        loading = true
+        let data = await store.voice(for: voiceID)
+        loading = false
+        failed = data == nil
+        if let data { player.toggle(id: voiceID, data: data) }
+    }
+}
+
+/// Bars of a recorded waveform; the played part takes the sage tone.
+private struct WaveBars: View {
+    let levels: [Float]
+    var progress: Double = 0
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(Array(levels.enumerated()), id: \.offset) { index, level in
+                Capsule()
+                    .fill(Double(index) / Double(max(levels.count, 1)) < progress ? Room.sage : Room.ink3.opacity(0.35))
+                    .frame(width: 2.5, height: 3 + CGFloat(level) * 23)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// While the mic is held: a pulse, the time, the live input, and how to cancel.
+private struct RecordingStrip: View {
+    let elapsed: TimeInterval
+    let levels: [Float]
+    let slide: CGFloat
+    let cancelDistance: CGFloat
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let cancelling = slide < -cancelDistance
+        HStack(spacing: 10) {
+            Circle()
+                .fill(Room.blocking)
+                .frame(width: 9, height: 9)
+                .opacity(pulse ? 0.35 : 1)
+                .onAppear {
+                    guard !reduceMotion else { return }
+                    withAnimation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true)) { pulse = true }
+                }
+            Text(voiceTime(elapsed))
+                .font(.body.monospacedDigit())
+                .foregroundStyle(Room.ink)
+            HStack(spacing: 2) {
+                ForEach(Array(levels.suffix(24).enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(Room.sage.opacity(0.8))
+                        .frame(width: 2.5, height: 3 + CGFloat(level) * 19)
+                }
+            }
+            .frame(height: 22)
+            Spacer(minLength: 4)
+            Label(cancelling ? "Bırak, iptal" : "İptal", systemImage: "chevron.left")
+                .font(.footnote)
+                .foregroundStyle(cancelling ? Room.blocking : Room.ink3)
+                .offset(x: max(slide * 0.5, -50))
+        }
+        .padding(.leading, 12)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Kaydediliyor, \(Int(elapsed)) saniye")
+    }
+}
+
+/// "0:07", "1:42"
+private func voiceTime(_ seconds: Double) -> String {
+    let total = max(0, Int(seconds.rounded(.down)))
+    return "\(total / 60):\(String(format: "%02d", total % 60))"
 }
 
 /// Full-screen photo on a native UIScrollView, so it feels like Photos/WhatsApp:

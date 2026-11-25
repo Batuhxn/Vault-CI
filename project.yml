@@ -61,6 +61,9 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UIRequiresFullScreen: "YES"
+        # Export compliance (answered for build 7): standard TLS only (Firebase/gRPC),
+        # exempt, not distributed in France. Revisit when end-to-end encryption lands.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: "NO"
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: "YES"
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
         MARKETING_VERSION: "0.1.0"

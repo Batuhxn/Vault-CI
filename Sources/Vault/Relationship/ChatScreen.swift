@@ -26,6 +26,8 @@ struct ChatScreen: View {
     @State private var micHeld = false
     @State private var micSlide: CGFloat = 0
     @State private var micHint = false
+    /// The message being answered (shown above the composer until sent or dismissed).
+    @State private var replyTarget: LocalMessage?
     private static let cancelDistance: CGFloat = 90
     @FocusState private var composing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -198,6 +200,14 @@ struct ChatScreen: View {
             }
             .defaultScrollAnchor(.bottom)
             .scrollDismissesKeyboard(.interactively)
+            .environment(\.bubbleContext, BubbleContext(
+                partnerName: store.partnerName.isEmpty ? partner.displayName : store.partnerName,
+                canAct: store.canSend,
+                react: { id, emoji in store.react(to: id, emoji: emoji) },
+                reply: { message in
+                    replyTarget = message
+                    composing = true
+                }))
             // Incoming messages settle on the same spring; sends are already inside withAnimation.
             .animation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion), value: store.messages.count)
             // Follow the newest message: always for our own sends, and for the partner's
@@ -230,6 +240,13 @@ struct ChatScreen: View {
         let ready = Self.canSubmit(draft: draft, canSend: store.canSend)
         let tooLong = draft.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count > WatchlinkStore.maxMessageBytes
         return VStack(alignment: .leading, spacing: 4) {
+            if let replyTarget, !recorder.isRecording {
+                ReplyBar(target: replyTarget,
+                         partnerName: store.partnerName.isEmpty ? partner.displayName : store.partnerName) {
+                    self.replyTarget = nil
+                }
+                .wlTransition(.move(edge: .bottom).combined(with: .opacity), reduceMotion: reduceMotion)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 if recorder.isRecording {
                     RecordingStrip(elapsed: recorder.elapsed, levels: recorder.levels,
@@ -300,6 +317,7 @@ struct ChatScreen: View {
         .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: ready)
         .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: recorder.isRecording)
         .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: micHint)
+        .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: replyTarget?.id)
         .sensoryFeedback(.impact(weight: .medium), trigger: recorder.isRecording)
         .task { recorder.onLimit = { finishRecording(send: true) } }
     }
@@ -380,7 +398,8 @@ struct ChatScreen: View {
         let text = draft
         var result: Result<UUID, SecurityFailure> = .failure(.sessionNotSecure)
         withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) {
-            result = store.send(text)
+            result = store.send(text, replyTo: replyTarget?.id)
+            if case .success = result { replyTarget = nil }
             draft = Self.draftAfterSend(result, draft: text)
         }
         switch result {
@@ -504,34 +523,107 @@ struct MessageRunView: View {
 struct ConversationBubble: View {
     let message: LocalMessage
     let position: MessageRun.Position
+    @Environment(\.bubbleContext) private var context
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Swipe right to reply: how far the bubble has followed the finger.
+    @State private var swipe: CGFloat = 0
 
     private static let radius: CGFloat = 20
     private static let joined: CGFloat = 7
+    private static let replyDistance: CGFloat = 56
+    static let reactionChoices = ["❤️", "😂", "😮", "😢"]
 
     var body: some View {
         let shape = UnevenRoundedRectangle(cornerRadii: radii, style: .continuous)
-        Group {
-            switch message.kind {
-            case .text:
+        content(shape)
+            .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
+                if !message.reactions.isEmpty {
+                    ReactionPill(reactions: message.reactions)
+                        .offset(x: message.isMine ? -6 : 6, y: 14)
+                        .wlTransition(.scale(scale: 0.4).combined(with: .opacity), reduceMotion: reduceMotion)
+                }
+            }
+            .padding(.bottom, message.reactions.isEmpty ? 0 : 14)
+            .animation(RelationshipMotion.resolve(RelationshipMotion.softSmall, reduceMotion: reduceMotion), value: message.reactions)
+            .contentShape(.contextMenuPreview, shape)
+            .contextMenu { if context.canAct { menu } }
+            .onTapGesture(count: 2) {
+                guard context.canAct else { return }
+                context.react(message.id, "❤️")
+            }
+            .offset(x: swipe)
+            .background(alignment: .leading) {
+                Image(systemName: "arrowshape.turn.up.left.fill")
+                    .font(.footnote)
+                    .foregroundStyle(Room.sage)
+                    .opacity(Double(min(swipe / Self.replyDistance, 1)))
+                    .scaleEffect(swipe >= Self.replyDistance ? 1.15 : 0.85)
+                    .offset(x: -22)
+            }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 18)
+                    .onChanged { value in
+                        guard context.canAct, value.translation.width > 0,
+                              value.translation.width > abs(value.translation.height) * 1.6 else { return }
+                        swipe = min(value.translation.width * 0.7, Self.replyDistance + 14)
+                    }
+                    .onEnded { _ in
+                        if swipe >= Self.replyDistance { context.reply(message) }
+                        withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) { swipe = 0 }
+                    }
+            )
+            .sensoryFeedback(.impact(weight: .light), trigger: swipe >= Self.replyDistance)
+            .accessibilityAction(named: "Yanıtla") { context.reply(message) }
+            .accessibilityAction(named: "Kalp bırak") { context.react(message.id, "❤️") }
+            .containerRelativeFrame(.horizontal, alignment: message.isMine ? .trailing : .leading) { width, _ in width * 0.76 }
+            .frame(maxWidth: .infinity, alignment: message.isMine ? .trailing : .leading)
+    }
+
+    @ViewBuilder private func content(_ shape: UnevenRoundedRectangle) -> some View {
+        switch message.kind {
+        case .text:
+            VStack(alignment: .leading, spacing: 6) {
+                if let quote = message.quote {
+                    QuoteView(quote: quote, partnerName: context.partnerName)
+                }
                 Text(message.text)
                     .font(.body)
                     .foregroundStyle(Room.ink)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(message.isMine ? Room.mine : Room.paper, in: shape)
-                    .overlay { if !message.isMine { shape.stroke(Room.ink.opacity(0.06), lineWidth: 1) } }
-                    .accessibilityLabel(message.isMine ? "Sen: \(message.text)" : message.text)
-            case .photo(let photoID):
-                PhotoBubble(photoID: photoID, shape: shape)
-                    .accessibilityLabel(message.isMine ? "Bir fotoğraf gönderdin" : "Fotoğraf")
-            case .heartbeat(let bpm):
-                HeartbeatBubble(bpm: bpm, mine: message.isMine, shape: shape)
-            case .voice(let voiceID, let seconds, let wave):
-                VoiceBubble(voiceID: voiceID, seconds: seconds, wave: wave, mine: message.isMine, shape: shape)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(message.isMine ? Room.mine : Room.paper, in: shape)
+            .overlay { if !message.isMine { shape.stroke(Room.ink.opacity(0.06), lineWidth: 1) } }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(accessibilityText)
+        case .photo(let photoID):
+            PhotoBubble(photoID: photoID, shape: shape)
+                .accessibilityLabel(message.isMine ? "Bir fotoğraf gönderdin" : "Fotoğraf")
+        case .heartbeat(let bpm):
+            HeartbeatBubble(bpm: bpm, mine: message.isMine, shape: shape)
+        case .voice(let voiceID, let seconds, let wave):
+            VoiceBubble(voiceID: voiceID, seconds: seconds, wave: wave, mine: message.isMine, shape: shape)
+        }
+    }
+
+    @ViewBuilder private var menu: some View {
+        ControlGroup {
+            ForEach(Self.reactionChoices, id: \.self) { emoji in
+                Button(emoji) { context.react(message.id, emoji) }
             }
         }
-        .containerRelativeFrame(.horizontal, alignment: message.isMine ? .trailing : .leading) { width, _ in width * 0.76 }
-        .frame(maxWidth: .infinity, alignment: message.isMine ? .trailing : .leading)
+        .controlGroupStyle(.palette)
+        Button { context.reply(message) } label: { Label("Yanıtla", systemImage: "arrowshape.turn.up.left") }
+        if case .text = message.kind {
+            Button { UIPasteboard.general.string = message.text } label: { Label("Kopyala", systemImage: "doc.on.doc") }
+        }
+    }
+
+    private var accessibilityText: String {
+        var parts = [message.isMine ? "Sen: \(message.text)" : message.text]
+        if let quote = message.quote { parts.insert("Yanıt: \(quote.snippet)", at: 0) }
+        for reaction in message.reactions { parts.append(reaction.mine ? "Tepkin \(reaction.emoji)" : "Tepki \(reaction.emoji)") }
+        return parts.joined(separator: ". ")
     }
 
     private var radii: RectangleCornerRadii {
@@ -602,6 +694,109 @@ private struct HeartbeatBubble: View {
         }
         .buttonStyle(Pressable())
         .accessibilityLabel(mine ? "Kalp atışın, dakikada \(bpm) atım" : "Bir kalp atışı, dakikada \(bpm) atım. Hissetmek için dokun.")
+    }
+}
+
+/// What a bubble needs from the conversation: who the partner is, and how to react or reply.
+struct BubbleContext {
+    var partnerName = ""
+    var canAct = false
+    var react: (UUID, String) -> Void = { _, _ in }
+    var reply: (LocalMessage) -> Void = { _ in }
+}
+
+private struct BubbleContextKey: EnvironmentKey {
+    static let defaultValue = BubbleContext()
+}
+
+extension EnvironmentValues {
+    var bubbleContext: BubbleContext {
+        get { self[BubbleContextKey.self] }
+        set { self[BubbleContextKey.self] = newValue }
+    }
+}
+
+/// The quoted message inside a reply: a sage rule, who wrote it, one line of it.
+private struct QuoteView: View {
+    let quote: LocalMessage.Quote
+    let partnerName: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Capsule().fill(Room.sage).frame(width: 3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(quote.mine ? "Sen" : (partnerName.isEmpty ? "O" : partnerName))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Room.sageDeep)
+                Text(quote.snippet)
+                    .font(.footnote)
+                    .foregroundStyle(Room.ink2)
+                    .lineLimit(2)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.vertical, 2)
+    }
+}
+
+/// Reactions sit on the bubble's lower corner: one emoji, or one with "2" when both chose it.
+private struct ReactionPill: View {
+    let reactions: [LocalMessage.Reaction]
+
+    var body: some View {
+        let emojis = reactions.map(\.emoji)
+        let same = Set(emojis).count == 1 && emojis.count == 2
+        HStack(spacing: 2) {
+            if same {
+                Text(emojis[0])
+                Text("2").font(.caption2.weight(.semibold)).foregroundStyle(Room.ink2)
+            } else {
+                ForEach(Array(emojis.enumerated()), id: \.offset) { _, emoji in Text(emoji) }
+            }
+        }
+        .font(.footnote)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Room.paper, in: Capsule())
+        .overlay(Capsule().stroke(Room.hairline, lineWidth: 1))
+        .shadow(color: Room.ink.opacity(0.08), radius: 4, y: 2)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Above the composer while answering a message.
+private struct ReplyBar: View {
+    let target: LocalMessage
+    let partnerName: String
+    let cancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Capsule().fill(Room.sage).frame(width: 3, height: 34)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(target.isMine ? "Kendine yanıt" : "\(partnerName.isEmpty ? "Mesaja" : partnerName) · yanıt")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Room.sageDeep)
+                Text(target.snippet)
+                    .font(.footnote)
+                    .foregroundStyle(Room.ink2)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button(action: cancel) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Room.ink3)
+                    .frame(width: 30, height: 30)
+                    .background(Room.control, in: Circle())
+            }
+            .accessibilityLabel("Yanıtı iptal et")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .background(Room.paper.opacity(0.96), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Room.ink.opacity(0.07), lineWidth: 1))
     }
 }
 

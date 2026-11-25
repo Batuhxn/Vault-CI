@@ -31,12 +31,40 @@ struct LocalMessage: Identifiable, Equatable {
         case voice(voiceID: String, seconds: Double, wave: [UInt8])
     }
 
+    /// Who wrote the quoted message and a one-line preview of it.
+    struct Quote: Equatable {
+        let mine: Bool
+        let snippet: String
+    }
+
+    struct Reaction: Equatable {
+        let emoji: String
+        let mine: Bool
+    }
+
     let id: UUID
     let text: String
     let isMine: Bool
     let timestamp: Date
     var delivery: DeliveryState
     var kind: Kind = .text
+    /// The message this one answers, and its quote as drawn on this phone.
+    var replyTo: UUID?
+    var quote: Quote?
+    /// At most one per person (two people, two reactions).
+    var reactions: [Reaction] = []
+
+    /// One line for quotes and previews.
+    var snippet: String {
+        switch kind {
+        case .text: return String(text.prefix(120))
+        case .photo: return "📷 Fotoğraf"
+        case .heartbeat(let bpm): return "💓 Kalp atışı · \(bpm) BPM"
+        case .voice(_, let seconds, _):
+            let total = Int(seconds.rounded())
+            return "🎤 Sesli mesaj · \(total / 60):\(String(format: "%02d", total % 60))"
+        }
+    }
 
     init(id: UUID = UUID(), text: String, isMine: Bool, timestamp: Date = Date(),
          delivery: DeliveryState = .pending, kind: Kind = .text) {
@@ -117,6 +145,8 @@ final class WatchlinkStore {
     @ObservationIgnored private var firstSnapshot = true
     @ObservationIgnored private let photoCache = NSCache<NSString, UIImage>()
     @ObservationIgnored private var voiceCache: [String: Data] = [:]
+    /// My reactions sent but not yet back from the server: target id -> (reaction message id, emoji).
+    @ObservationIgnored private var pendingReactions: [String: (id: String, emoji: String)] = [:]
 
     init(backend: any ChatBackend, pair: PairInfo, myID: String, session: PairCrypto.Session) {
         self.backend = backend
@@ -189,14 +219,41 @@ final class WatchlinkStore {
     // MARK: Sending
 
     /// Synchronous by design (Stage 2's composer clears the draft on success).
-    func send(_ text: String) -> Result<UUID, SecurityFailure> {
+    func send(_ text: String, replyTo: UUID? = nil) -> Result<UUID, SecurityFailure> {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return .failure(.sessionNotSecure) }
         guard !trimmed.isEmpty else { return .failure(.emptyMessage) }
         guard trimmed.utf8.count <= Self.maxMessageBytes else { return .failure(.messageTooLarge) }
-        let message = LocalMessage(text: trimmed, isMine: true, delivery: .sending)
-        enqueue(message, SealedPayload(kind: "text", text: trimmed))
+        var message = LocalMessage(text: trimmed, isMine: true, delivery: .sending)
+        message.replyTo = replyTo
+        enqueue(message, SealedPayload(kind: "text", text: trimmed, replyTo: replyTo?.uuidString))
         return .success(message.id)
+    }
+
+    /// Puts my reaction on a message, or takes it back when it's the same emoji.
+    /// Sent as its own sealed message; it never shows as a bubble.
+    func react(to target: UUID, emoji: String) {
+        guard canSend else { return }
+        let targetID = target.uuidString
+        let current = messages.first { $0.id == target }?.reactions.first { $0.mine }?.emoji
+        let chosen = current == emoji ? "" : emoji
+        let id = UUID().uuidString
+        let payload = SealedPayload(kind: "reaction", target: targetID, emoji: chosen)
+        guard let data = try? JSONEncoder().encode(payload),
+              let sealed = try? session.seal(data, aad: session.messageAAD(id: id, sender: myID)) else { return }
+        pendingReactions[targetID] = (id, chosen)
+        rebuild()
+        let backend = self.backend, pairID = pair.id
+        Task { @MainActor [weak self] in
+            do {
+                try await backend.sendSealed(sealed, id: id, pairID: pairID)
+                // A reaction is worth a nudge; taking one back is not.
+                if !chosen.isEmpty { await self?.notifyPartner(messageID: id) }
+            } catch {
+                if self?.pendingReactions[targetID]?.id == id { self?.pendingReactions[targetID] = nil }
+                self?.rebuild()
+            }
+        }
     }
 
     func sendPhoto(_ data: Data) async -> Bool {
@@ -325,10 +382,26 @@ final class WatchlinkStore {
     }
 
     private func rebuild() {
-        let fromServer = server.map { message -> LocalMessage in
+        // Reactions first: they decorate messages and are never shown on their own.
+        var reactions: [String: [String: String]] = [:]   // target -> member -> emoji (latest wins)
+        var visible: [BackendMessage] = []
+        for message in server {
+            if let payload = open(message), payload.kind == "reaction" {
+                if let target = payload.target { reactions[target, default: [:]][message.senderID] = payload.emoji ?? "" }
+            } else {
+                visible.append(message)
+            }
+        }
+        let arrived = Set(server.map(\.id))
+        for (target, pending) in pendingReactions {
+            if arrived.contains(pending.id) { pendingReactions[target] = nil } else { reactions[target, default: [:]][myID] = pending.emoji }
+        }
+
+        let fromServer = visible.map { message -> LocalMessage in
             let kind: LocalMessage.Kind
             let text: String
-            switch open(message) {
+            let payload = open(message)
+            switch payload {
             case let payload? where payload.kind == "text":
                 kind = .text; text = payload.text ?? ""
             case let payload? where payload.kind == "photo":
@@ -342,11 +415,26 @@ final class WatchlinkStore {
             default:
                 kind = .text; text = "🔒 Bu mesaj bu telefonda açılamadı."
             }
-            return LocalMessage(id: Self.uuid(for: message.id), text: text, isMine: message.senderID == myID,
-                                timestamp: message.createdAt ?? Date(),
-                                delivery: message.pending ? .sending : .sent, kind: kind)
+            var local = LocalMessage(id: Self.uuid(for: message.id), text: text, isMine: message.senderID == myID,
+                                     timestamp: message.createdAt ?? Date(),
+                                     delivery: message.pending ? .sending : .sent, kind: kind)
+            local.replyTo = payload?.replyTo.flatMap(UUID.init(uuidString:))
+            return local
         }
-        messages = (fromServer + outbox.values).sorted { $0.timestamp < $1.timestamp }
+        var all = (fromServer + outbox.values).sorted { $0.timestamp < $1.timestamp }
+        let byID = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for index in all.indices {
+            let id = all[index].id.uuidString
+            all[index].reactions = (reactions[id] ?? [:])
+                .filter { !$0.value.isEmpty }
+                .sorted { $0.key < $1.key }
+                .map { LocalMessage.Reaction(emoji: $0.value, mine: $0.key == myID) }
+            if let replyTo = all[index].replyTo {
+                all[index].quote = byID[replyTo].map { LocalMessage.Quote(mine: $0.isMine, snippet: $0.snippet) }
+                    ?? LocalMessage.Quote(mine: false, snippet: "Eski bir mesaj")
+            }
+        }
+        messages = all
     }
 
     /// Our ids are UUID strings; anything else maps to a stable UUID from its bytes.

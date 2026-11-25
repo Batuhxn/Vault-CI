@@ -150,7 +150,8 @@ enum PairCrypto {
 
 /// What a sealed message says. The server sees none of it, not even the kind.
 struct SealedPayload: Codable, Equatable {
-    /// "text" | "photo" | "heartbeat" | "voice" | "private" (Özel Alan: pushes never show what it is).
+    /// "text" | "photo" | "heartbeat" | "voice" | "reaction" | "private"
+    /// (Özel Alan: pushes never show what it is).
     var kind: String
     var text: String?
     var photoID: String?
@@ -159,6 +160,11 @@ struct SealedPayload: Codable, Equatable {
     var voiceID: String?
     var seconds: Double?
     var wave: [UInt8]?
+    /// Reaction: the message it sits on and the emoji ("" takes it back).
+    var target: String?
+    var emoji: String?
+    /// Reply: the message this one answers (the quote is drawn on the phone).
+    var replyTo: String?
 }
 
 /// A member's sealed profile: the name they chose, their recorded rhythm and

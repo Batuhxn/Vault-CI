@@ -29,7 +29,7 @@ struct PrivateSpaceLayer: View {
                     .opacity(progress)
                     // Content arrives from the moon's direction.
                     .offset(x: reduceMotion ? 0 : 40 * (1 - progress), y: reduceMotion ? 0 : -40 * (1 - progress))
-                Text("Dönmek için aya dokun")
+                Text("Dönmek için aya dokun ya da aşağı kaydır")
                     .font(.footnote)
                     .foregroundStyle(Room.nightSecondary.opacity(0.8))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -50,6 +50,15 @@ struct PrivateSpaceLayer: View {
             .opacity(reduceMotion ? progress : 1)
         }
         .ignoresSafeArea()
+        // Leave by swiping down (or right from the edge), as well as by the moon.
+        .gesture(
+            DragGesture(minimumDistance: 24)
+                .onEnded { value in
+                    let down = value.translation.height > 90
+                    let edgeRight = value.startLocation.x < 32 && value.translation.width > 80
+                    if down || edgeRight { close() }
+                }
+        )
         .allowsHitTesting(progress > 0.5)
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(.isModal)

@@ -138,13 +138,19 @@ struct RelationshipShell: View {
                 HomeView(store: store, relationship: relationship, open: openChat) { surfaceFrame = $0 }
             case .chat:
                 ChatScreen(store: store, partner: relationship.snapshot.profile.partner,
-                           focusRequested: $composerFocusRequested, openPrivate: openPrivate) { moonFrame = $0 }
+                           focusRequested: $composerFocusRequested, openPrivate: openPrivate,
+                           goBack: backToHome) { moonFrame = $0 }
             case .us:
                 UsView(store: store, relationship: relationship)
             }
         } else {
             ScreenScaffold { EmptyView() }
         }
+    }
+
+    /// Chat's back chevron / edge swipe: Home glides in from the left.
+    private func backToHome() {
+        withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) { go(to: .home) }
     }
 
     private func go(to new: Destination, glide: Bool = true) {

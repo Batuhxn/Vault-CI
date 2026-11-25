@@ -11,6 +11,8 @@ struct ChatScreen: View {
     /// Set by Home's "Write to…" pill; consumed once to focus the composer.
     @Binding var focusRequested: Bool
     let openPrivate: () -> Void
+    /// Back to Home: the header chevron and a swipe from the left edge.
+    let goBack: () -> Void
     let onMoonFrame: (CGRect) -> Void
 
     @State private var draft = ""
@@ -50,6 +52,17 @@ struct ChatScreen: View {
         }
         // The conversation keeps its height while typing.
         .toolbar(composing ? .hidden : .visible, for: .tabBar)
+        // Swipe from the left edge to go back, like a pushed screen. Simultaneous,
+        // so the transcript keeps scrolling; only a clear rightward edge drag counts.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 24, coordinateSpace: .global)
+                .onEnded { value in
+                    guard value.startLocation.x < 32,
+                          value.translation.width > 80,
+                          abs(value.translation.height) < value.translation.width else { return }
+                    back()
+                }
+        )
         .sensoryFeedback(RelationshipMotion.sendFeedback, trigger: sentCount)
         .alert("Mesaj gönderilemedi", isPresented: Binding(get: { sendProblem != nil }, set: { if !$0 { sendProblem = nil } })) {
             Button("Tamam", role: .cancel) { }
@@ -101,8 +114,24 @@ struct ChatScreen: View {
         .padding(.bottom, 4)
     }
 
+    private func back() {
+        composing = false
+        goBack()
+    }
+
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
+            Button(action: back) {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Room.sageDeep)
+                    .frame(width: 36, height: 36)
+                    .background(Room.control, in: Circle())
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
+            .accessibilityLabel("Ana Sayfa'ya dön")
             ConversationHeader(partner: partner, state: store.securityState, connected: store.connectionAvailable)
             Spacer(minLength: 0)
             Button(action: openPrivate) {
@@ -118,7 +147,7 @@ struct ChatScreen: View {
             .accessibilityLabel("Özel Alan")
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onMoonFrame($0) }
         }
-        .padding(.leading, screenMargin)
+        .padding(.leading, 8)
         .padding(.trailing, 12)
         .padding(.top, 8)
         .padding(.bottom, 14)

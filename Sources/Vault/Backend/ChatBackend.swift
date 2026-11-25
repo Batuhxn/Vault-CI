@@ -4,19 +4,17 @@ import Foundation
 /// it (`FirebaseChatBackend`); a self-hosted relay or the parked MLS engine can
 /// replace it later without touching the UI.
 ///
+/// End-to-end encrypted: everything that crosses this boundary about a pair's
+/// content is already sealed by `PairCrypto` (messages, photos, profiles). The
+/// backend only moves opaque bytes plus routing metadata (pair, sender, time).
+///
 /// Rule: no file outside `Sources/Vault/Backend/` imports Firebase.
-
-enum BackendMessageKind: Equatable {
-    case text(String)
-    /// Photo bytes live in pairs/{pairId}/photos/{photoID}; load lazily with `loadPhoto`.
-    case photo(photoID: String)
-    case heartbeat(bpm: Int)
-}
 
 struct BackendMessage: Identifiable, Equatable {
     let id: String
     let senderID: String
-    let kind: BackendMessageKind
+    /// ChaCha20-Poly1305 combined box (nonce + ciphertext + tag) of a `SealedPayload`.
+    let sealed: Data
     /// `nil` while the server timestamp is still pending (local echo).
     let createdAt: Date?
     /// True until the server has acknowledged the write.
@@ -26,10 +24,10 @@ struct BackendMessage: Identifiable, Equatable {
 struct PairInfo: Equatable {
     let id: String
     let memberIDs: [String]
-    /// Recorded heartbeat of each member, keyed by member id.
-    let bpm: [String: Int]
-    /// Display name each member chose, keyed by member id.
-    var names: [String: String] = [:]
+    /// Each member's X25519 public key (32 bytes), published at pairing.
+    var publicKeys: [String: Data] = [:]
+    /// Each member's sealed `SealedProfile` (name, rhythm).
+    var sealedProfiles: [String: Data] = [:]
     var isComplete: Bool { memberIDs.count == 2 }
 }
 
@@ -51,26 +49,24 @@ protocol ChatBackend: AnyObject {
     func signInForTesting() async throws
     func signOut() throws
 
-    // Pairing.
+    // Pairing. Each side publishes its public key with the create / join.
     /// Creates a pair with only this user and returns an 8-character join code (15 min).
-    func createPair() async throws -> (code: String, pairID: String)
-    func joinPair(code: String) async throws
-    /// The pair this user belongs to, if any.
-    func currentPair() async throws -> PairInfo?
+    func createPair(publicKey: Data) async throws -> (code: String, pairID: String)
+    func joinPair(code: String, publicKey: Data) async throws
+    /// Complete pairs this user belongs to, newest first.
+    func currentPairs() async throws -> [PairInfo]
     func observePair(_ pairID: String, onChange: @escaping (PairInfo) -> Void) -> ListenerToken
 
-    // Messages.
+    // Messages (sealed).
     func observeMessages(pairID: String, limit: Int, onChange: @escaping ([BackendMessage]) -> Void) -> ListenerToken
-    /// `id` is chosen by the caller (a UUID string) so a local echo and the
-    /// server copy are the same message.
-    func sendText(_ text: String, id: String, pairID: String) async throws
-    /// `jpeg` must already be compressed by the caller (`PhotoCompressor`, <= 900 KB).
-    func sendPhoto(_ jpeg: Data, id: String, pairID: String) async throws
-    func loadPhoto(photoID: String, pairID: String) async throws -> Data
-    func sendHeartbeat(bpm: Int, id: String, pairID: String) async throws
+    /// `id` is chosen by the caller (a UUID string) and is part of the sealed
+    /// box's authenticated data, so the server can't move the box.
+    func sendSealed(_ sealed: Data, id: String, pairID: String) async throws
+    /// Stores a sealed photo under a caller-chosen id (also bound into the box).
+    func uploadSealedPhoto(_ sealed: Data, id: String, pairID: String) async throws
+    func loadSealedPhoto(id: String, pairID: String) async throws -> Data
 
-    // Profile, heartbeat, push.
-    func saveMyName(_ name: String, pairID: String) async throws
-    func saveMyBPM(_ bpm: Int, pairID: String) async throws
+    // Profile (sealed name + rhythm), push.
+    func saveSealedProfile(_ sealed: Data, pairID: String) async throws
     func registerPushToken(_ token: String) async throws
 }

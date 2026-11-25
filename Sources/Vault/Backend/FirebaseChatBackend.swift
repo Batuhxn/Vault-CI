@@ -5,16 +5,15 @@ import Foundation
 /// Firebase implementation of `ChatBackend`.
 ///
 /// Data model (enforced by firebase/firestore.rules):
-///   users/{uid}                     { fcmToken }                       self-only, write-only
-///   codes/{code}                    { pairId, creator, expiresAt }     get-by-id only
-///   pairs/{pairId}                  { members, createdAt, joinOpenUntil, bpm.{uid}, names.{uid} }
-///   pairs/{pairId}/messages/{id}    { sender, type, text | photoId | bpm, createdAt }
-///   pairs/{pairId}/photos/{id}      { sender, image (bytes <= 900 KB), createdAt }
+///   users/{uid}                     { fcmToken }                          self-only, write-only
+///   codes/{code}                    { pairId, creator, expiresAt }        get-by-id only
+///   pairs/{pairId}                  { members, createdAt, joinOpenUntil,
+///                                     pubkeys.{uid}: bytes(32), sealed.{uid}: bytes }
+///   pairs/{pairId}/messages/{id}    { sender, type: "e2e", ct: bytes, createdAt }
+///   pairs/{pairId}/photos/{id}      { sender, image: bytes (sealed JPEG), createdAt }
 ///
-/// Spark plan: no Cloud Storage, so photos are JPEG bytes in their own
-/// documents and are fetched only when shown.
-///
-/// Nothing here logs message text or image bytes.
+/// Spark plan: no Cloud Storage, so sealed photos are bytes in their own
+/// documents, fetched only when shown. Google sees routing metadata only.
 @MainActor
 final class FirebaseChatBackend: ChatBackend {
     private let db = Firestore.firestore()
@@ -46,7 +45,7 @@ final class FirebaseChatBackend: ChatBackend {
 
     // MARK: Pairing
 
-    func createPair() async throws -> (code: String, pairID: String) {
+    func createPair(publicKey: Data) async throws -> (code: String, pairID: String) {
         let me = try uid()
         let pair = db.collection("pairs").document()
         let until = Timestamp(date: Date().addingTimeInterval(Self.joinWindow))
@@ -54,6 +53,7 @@ final class FirebaseChatBackend: ChatBackend {
             "members": [me],
             "createdAt": FieldValue.serverTimestamp(),
             "joinOpenUntil": until,
+            "pubkeys": [me: publicKey],
         ])
         // A collision only fails the create (rules forbid update), so retry a few times.
         for _ in 0..<5 {
@@ -70,7 +70,7 @@ final class FirebaseChatBackend: ChatBackend {
         throw BackendError.invalidCode
     }
 
-    func joinPair(code rawCode: String) async throws {
+    func joinPair(code rawCode: String, publicKey: Data) async throws {
         let me = try uid()
         let code = rawCode.uppercased().filter { Self.codeAlphabet.contains($0) }
         guard code.count == 8 else { throw BackendError.invalidCode }
@@ -82,23 +82,27 @@ final class FirebaseChatBackend: ChatBackend {
         }
         guard let pairID = snapshot.data()?["pairId"] as? String else { throw BackendError.invalidCode }
         do {
+            // Membership and key arrive together, so a pair is never complete without both keys.
             try await db.collection("pairs").document(pairID).updateData([
                 "members": FieldValue.arrayUnion([me]),
+                "pubkeys.\(me)": publicKey,
             ])
         } catch {
             throw BackendError.pairFull
         }
     }
 
-    func currentPair() async throws -> PairInfo? {
+    func currentPairs() async throws -> [PairInfo] {
         let me = try uid()
         let result = try await db.collection("pairs")
             .whereField("members", arrayContains: me)
-            .limit(to: 5)
+            .limit(to: 10)
             .getDocuments()
-        // Prefer a complete pair; an abandoned half-open pair is ignored.
-        let pairs = result.documents.compactMap(Self.pair(from:))
-        return pairs.first(where: \.isComplete) ?? pairs.first
+        return result.documents
+            .sorted { ($0.get("createdAt") as? Timestamp)?.dateValue() ?? .distantPast
+                    > ($1.get("createdAt") as? Timestamp)?.dateValue() ?? .distantPast }
+            .compactMap(Self.pair(from:))
+            .filter(\.isComplete)
     }
 
     func observePair(_ pairID: String, onChange: @escaping (PairInfo) -> Void) -> ListenerToken {
@@ -122,47 +126,36 @@ final class FirebaseChatBackend: ChatBackend {
         return FirestoreListener(registration)
     }
 
-    func sendText(_ text: String, id: String, pairID: String) async throws {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        try await post(pairID, id: id, ["type": "text", "text": String(trimmed.prefix(4000))])
-    }
-
-    func sendPhoto(_ jpeg: Data, id: String, pairID: String) async throws {
-        guard jpeg.count <= Self.maxPhotoBytes else { throw BackendError.photoTooLarge }
-        let me = try uid()
-        let photo = db.collection("pairs").document(pairID).collection("photos").document()
-        try await photo.setData([
-            "sender": me,
-            "image": jpeg,
+    func sendSealed(_ sealed: Data, id: String, pairID: String) async throws {
+        try await messages(pairID).document(id).setData([
+            "sender": try uid(),
+            "type": "e2e",
+            "ct": sealed,
             "createdAt": FieldValue.serverTimestamp(),
         ])
-        try await post(pairID, id: id, ["type": "photo", "photoId": photo.documentID])
     }
 
-    func loadPhoto(photoID: String, pairID: String) async throws -> Data {
+    func uploadSealedPhoto(_ sealed: Data, id: String, pairID: String) async throws {
+        guard sealed.count <= Self.maxPhotoBytes else { throw BackendError.photoTooLarge }
+        try await db.collection("pairs").document(pairID).collection("photos").document(id).setData([
+            "sender": try uid(),
+            "image": sealed,
+            "createdAt": FieldValue.serverTimestamp(),
+        ])
+    }
+
+    func loadSealedPhoto(id: String, pairID: String) async throws -> Data {
         let snapshot = try await db.collection("pairs").document(pairID)
-            .collection("photos").document(photoID).getDocument()
+            .collection("photos").document(id).getDocument()
         guard let data = snapshot.data()?["image"] as? Data else { throw BackendError.noPair }
         return data
     }
 
-    func sendHeartbeat(bpm: Int, id: String, pairID: String) async throws {
-        try await post(pairID, id: id, ["type": "heartbeat", "bpm": min(max(bpm, 40), 180)])
-    }
+    // MARK: Profile + push
 
-    // MARK: Heartbeat + push
-
-    func saveMyName(_ name: String, pairID: String) async throws {
+    func saveSealedProfile(_ sealed: Data, pairID: String) async throws {
         let me = try uid()
-        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
-        guard !trimmed.isEmpty else { return }
-        try await db.collection("pairs").document(pairID).updateData(["names.\(me)": trimmed])
-    }
-
-    func saveMyBPM(_ bpm: Int, pairID: String) async throws {
-        let me = try uid()
-        try await db.collection("pairs").document(pairID).updateData(["bpm.\(me)": min(max(bpm, 40), 180)])
+        try await db.collection("pairs").document(pairID).updateData(["sealed.\(me)": sealed])
     }
 
     func registerPushToken(_ token: String) async throws {
@@ -176,40 +169,22 @@ final class FirebaseChatBackend: ChatBackend {
         db.collection("pairs").document(pairID).collection("messages")
     }
 
-    private func post(_ pairID: String, id: String, _ fields: [String: Any]) async throws {
-        var data = fields
-        data["sender"] = try uid()
-        data["createdAt"] = FieldValue.serverTimestamp()
-        try await messages(pairID).document(id).setData(data)
-    }
-
     private nonisolated static func pair(from snapshot: DocumentSnapshot) -> PairInfo? {
         guard let data = snapshot.data(), let members = data["members"] as? [String] else { return nil }
-        let bpm = (data["bpm"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
-        let names = (data["names"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
-        return PairInfo(id: snapshot.documentID, memberIDs: members, bpm: bpm, names: names)
+        let keys = (data["pubkeys"] as? [String: Any] ?? [:]).compactMapValues { $0 as? Data }
+        let sealed = (data["sealed"] as? [String: Any] ?? [:]).compactMapValues { $0 as? Data }
+        return PairInfo(id: snapshot.documentID, memberIDs: members, publicKeys: keys, sealedProfiles: sealed)
     }
 
     private nonisolated static func message(from snapshot: QueryDocumentSnapshot) -> BackendMessage? {
         let data = snapshot.data()
-        guard let sender = data["sender"] as? String, let type = data["type"] as? String else { return nil }
-        let kind: BackendMessageKind
-        switch type {
-        case "text":
-            guard let text = data["text"] as? String else { return nil }
-            kind = .text(text)
-        case "photo":
-            guard let photoID = data["photoId"] as? String else { return nil }
-            kind = .photo(photoID: photoID)
-        case "heartbeat":
-            guard let bpm = (data["bpm"] as? NSNumber)?.intValue else { return nil }
-            kind = .heartbeat(bpm: bpm)
-        default:
-            return nil
-        }
+        // Only sealed messages exist from here on; older plaintext test messages are skipped.
+        guard data["type"] as? String == "e2e",
+              let sender = data["sender"] as? String,
+              let sealed = data["ct"] as? Data else { return nil }
         // Pending server timestamps read as nil; estimate them so local echoes sort last.
         let created = (snapshot.get("createdAt", serverTimestampBehavior: .estimate) as? Timestamp)?.dateValue()
-        return BackendMessage(id: snapshot.documentID, senderID: sender, kind: kind, createdAt: created,
+        return BackendMessage(id: snapshot.documentID, senderID: sender, sealed: sealed, createdAt: created,
                               pending: snapshot.metadata.hasPendingWrites)
     }
 }

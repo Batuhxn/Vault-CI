@@ -92,20 +92,20 @@ struct PairMonogram: View {
     }
 }
 
-/// Trust, not presence. MVP: no end-to-end encryption, so the line says what
-/// is true (only the two of you have access), never "encrypted".
+/// Trust, not presence: "Uçtan uca şifreli" only for an established, connected
+/// pair (content is sealed on the phones with PairCrypto); otherwise its own wording.
 struct EncryptionLabel: View {
     let state: SecurityState
     let connected: Bool
 
     static func text(_ state: SecurityState, connected: Bool) -> String {
-        state == .secure && connected ? "Sadece ikiniz" : SecurityStatusView.label(state, connected: connected)
+        state == .secure && connected ? "Uçtan uca şifreli" : SecurityStatusView.label(state, connected: connected)
     }
 
     var body: some View {
         HStack(spacing: 4) {
             if state == .secure && connected {
-                Image(systemName: "person.2").imageScale(.small)
+                Image(systemName: "lock").imageScale(.small)
             }
             Text(Self.text(state, connected: connected))
         }

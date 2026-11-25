@@ -44,8 +44,7 @@ struct LocalMessage: Identifiable, Equatable {
     }
 }
 
-/// Connection wording. The MVP has no end-to-end encryption, so nothing here
-/// may claim it: the pair is private by access rules, not by cryptography.
+/// Connection wording (encryption is stated by EncryptionLabel, not here).
 struct SecurityStatusView: View {
     let state: SecurityState
     var connected = true
@@ -76,6 +75,9 @@ struct SecurityStatusView: View {
 
 /// One pair's conversation, as the Stage 2 screens expect it.
 ///
+/// End-to-end encrypted: every payload is sealed with the pair's
+/// `PairCrypto.Session` before it reaches the backend and opened here after.
+///
 /// Sends are optimistic: `send` appends the message at once (inside the
 /// caller's animation, so it rises out of the composer) with a client-chosen
 /// id, and the server copy replaces it when it arrives. Firestore queues
@@ -92,27 +94,33 @@ final class WatchlinkStore {
 
     var securityState: SecurityState { pair.isComplete ? .secure : .pairing }
     var canSend: Bool { securityState.canSend }
+    /// Six digits that must match on both phones (see Us → Neredesiniz).
+    var safetyCode: String { session.safetyCode }
 
     let myID: String
     var partnerID: String? { pair.memberIDs.first { $0 != myID } }
-    var myName: String { pair.names[myID] ?? "" }
-    var partnerName: String { partnerID.flatMap { pair.names[$0] } ?? "" }
-    var myBPM: Int { pair.bpm[myID] ?? 72 }
-    var partnerBPM: Int { partnerID.flatMap { pair.bpm[$0] } ?? 72 }
+    var myName: String { profile(of: myID).name ?? "" }
+    var partnerName: String { partnerID.map { profile(of: $0).name ?? "" } ?? "" }
+    var myBPM: Int { profile(of: myID).bpm ?? 72 }
+    var partnerBPM: Int { partnerID.flatMap { profile(of: $0).bpm } ?? 72 }
 
     @ObservationIgnored private let backend: any ChatBackend
+    @ObservationIgnored private let session: PairCrypto.Session
     @ObservationIgnored private var listener: (any ListenerToken)?
     @ObservationIgnored private var monitor: NWPathMonitor?
     @ObservationIgnored private var server: [BackendMessage] = []
     @ObservationIgnored private var outbox: [UUID: LocalMessage] = [:]
+    @ObservationIgnored private var opened: [String: SealedPayload?] = [:]
+    @ObservationIgnored private var photoSenders: [String: String] = [:]
     @ObservationIgnored private var seen = Set<String>()
     @ObservationIgnored private var firstSnapshot = true
     @ObservationIgnored private let photoCache = NSCache<NSString, UIImage>()
 
-    init(backend: any ChatBackend, pair: PairInfo, myID: String) {
+    init(backend: any ChatBackend, pair: PairInfo, myID: String, session: PairCrypto.Session) {
         self.backend = backend
         self.pair = pair
         self.myID = myID
+        self.session = session
     }
 
     func start() {
@@ -135,6 +143,27 @@ final class WatchlinkStore {
 
     func update(pair: PairInfo) { self.pair = pair }
 
+    // MARK: Profile
+
+    private func profile(of member: String) -> SealedProfile {
+        guard let sealed = pair.sealedProfiles[member],
+              let data = try? session.open(sealed, aad: session.profileAAD(of: member)),
+              let profile = try? JSONDecoder().decode(SealedProfile.self, from: data) else { return SealedProfile() }
+        return profile
+    }
+
+    /// Seals this member's name and rhythm into the pair document.
+    func saveProfile(name: String? = nil, bpm: Int? = nil) async {
+        var profile = profile(of: myID)
+        if let name { profile.name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40)) }
+        if let bpm { profile.bpm = min(max(bpm, 40), 180) }
+        guard let data = try? JSONEncoder().encode(profile),
+              let sealed = try? session.seal(data, aad: session.profileAAD(of: myID)) else { return }
+        try? await backend.saveSealedProfile(sealed, pairID: pair.id)
+    }
+
+    func saveMyBPM(_ bpm: Int) async { await saveProfile(bpm: bpm) }
+
     // MARK: Sending
 
     /// Synchronous by design (Stage 2's composer clears the draft on success).
@@ -144,14 +173,22 @@ final class WatchlinkStore {
         guard !trimmed.isEmpty else { return .failure(.emptyMessage) }
         guard trimmed.utf8.count <= Self.maxMessageBytes else { return .failure(.messageTooLarge) }
         let message = LocalMessage(text: trimmed, isMine: true, delivery: .sending)
-        enqueue(message) { backend, id, pairID in try await backend.sendText(trimmed, id: id, pairID: pairID) }
+        enqueue(message, SealedPayload(kind: "text", text: trimmed))
         return .success(message.id)
     }
 
     func sendPhoto(_ data: Data) async -> Bool {
-        guard canSend, let image = UIImage(data: data), let jpeg = PhotoCompressor.jpeg(from: image) else { return false }
-        let message = LocalMessage(text: "Fotoğraf", isMine: true, delivery: .sending, kind: .photo(photoID: ""))
-        enqueue(message) { backend, id, pairID in try await backend.sendPhoto(jpeg, id: id, pairID: pairID) }
+        // Leave room for the sealed box's 28 bytes of nonce + tag.
+        guard canSend, let image = UIImage(data: data),
+              let jpeg = PhotoCompressor.jpeg(from: image, maxBytes: PhotoCompressor.maxBytes - 64) else { return false }
+        let photoID = UUID().uuidString
+        guard let sealed = try? session.seal(jpeg, aad: session.photoAAD(id: photoID, sender: myID)) else { return false }
+        photoCache.setObject(image, forKey: photoID as NSString)
+        photoSenders[photoID] = myID
+        let message = LocalMessage(text: "Fotoğraf", isMine: true, delivery: .sending, kind: .photo(photoID: photoID))
+        enqueue(message, SealedPayload(kind: "photo", photoID: photoID)) { backend, pairID in
+            try await backend.uploadSealedPhoto(sealed, id: photoID, pairID: pairID)
+        }
         return true
     }
 
@@ -159,11 +196,7 @@ final class WatchlinkStore {
         guard canSend else { return }
         let bpm = myBPM
         let message = LocalMessage(text: "Kalp atışı", isMine: true, delivery: .sending, kind: .heartbeat(bpm: bpm))
-        enqueue(message) { backend, id, pairID in try await backend.sendHeartbeat(bpm: bpm, id: id, pairID: pairID) }
-    }
-
-    func saveMyBPM(_ bpm: Int) async {
-        try? await backend.saveMyBPM(bpm, pairID: pair.id)
+        enqueue(message, SealedPayload(kind: "heartbeat", bpm: bpm))
     }
 
     // MARK: Photos
@@ -171,7 +204,9 @@ final class WatchlinkStore {
     func image(for photoID: String) async -> UIImage? {
         guard !photoID.isEmpty else { return nil }
         if let cached = photoCache.object(forKey: photoID as NSString) { return cached }
-        guard let data = try? await backend.loadPhoto(photoID: photoID, pairID: pair.id),
+        guard let sender = photoSenders[photoID],
+              let sealed = try? await backend.loadSealedPhoto(id: photoID, pairID: pair.id),
+              let data = try? session.open(sealed, aad: session.photoAAD(id: photoID, sender: sender)),
               let image = UIImage(data: data) else { return nil }
         photoCache.setObject(image, forKey: photoID as NSString)
         return image
@@ -179,25 +214,39 @@ final class WatchlinkStore {
 
     // MARK: Internals
 
-    private func enqueue(_ message: LocalMessage,
-                         _ write: @escaping (any ChatBackend, String, String) async throws -> Void) {
+    /// Seals `payload` under the message id and sends it; `before` runs first (photo upload).
+    private func enqueue(_ message: LocalMessage, _ payload: SealedPayload,
+                         before: ((any ChatBackend, String) async throws -> Void)? = nil) {
         outbox[message.id] = message
         rebuild()
-        let backend = self.backend, pairID = pair.id, id = message.id
+        let id = message.id.uuidString
+        let sealed = (try? JSONEncoder().encode(payload)).flatMap { try? session.seal($0, aad: session.messageAAD(id: id, sender: myID)) }
+        let backend = self.backend, pairID = pair.id, localID = message.id
         Task { @MainActor [weak self] in
             do {
-                try await write(backend, id.uuidString, pairID)
+                guard let sealed else { throw PairCrypto.Failure.unreadable }
+                try await before?(backend, pairID)
+                try await backend.sendSealed(sealed, id: id, pairID: pairID)
             } catch {
-                self?.outbox[id]?.delivery = .failed
+                self?.outbox[localID]?.delivery = .failed
                 self?.rebuild()
             }
         }
     }
 
+    private func open(_ message: BackendMessage) -> SealedPayload? {
+        if let cached = opened[message.id] { return cached }
+        let payload = (try? session.open(message.sealed, aad: session.messageAAD(id: message.id, sender: message.senderID)))
+            .flatMap { try? JSONDecoder().decode(SealedPayload.self, from: $0) }
+        opened[message.id] = payload
+        if let photoID = payload?.photoID { photoSenders[photoID] = message.senderID }
+        return payload
+    }
+
     private func receive(_ incoming: [BackendMessage]) {
         if !firstSnapshot {
             for message in incoming where !seen.contains(message.id) && message.senderID != myID {
-                if case .heartbeat(let bpm) = message.kind { incomingHeartbeat = bpm }
+                if let payload = open(message), payload.kind == "heartbeat", let bpm = payload.bpm { incomingHeartbeat = bpm }
             }
         }
         firstSnapshot = false
@@ -212,10 +261,15 @@ final class WatchlinkStore {
         let fromServer = server.map { message -> LocalMessage in
             let kind: LocalMessage.Kind
             let text: String
-            switch message.kind {
-            case .text(let body): kind = .text; text = body
-            case .photo(let photoID): kind = .photo(photoID: photoID); text = "Fotoğraf"
-            case .heartbeat(let bpm): kind = .heartbeat(bpm: bpm); text = "Kalp atışı"
+            switch open(message) {
+            case let payload? where payload.kind == "text":
+                kind = .text; text = payload.text ?? ""
+            case let payload? where payload.kind == "photo":
+                kind = .photo(photoID: payload.photoID ?? ""); text = "Fotoğraf"
+            case let payload? where payload.kind == "heartbeat":
+                kind = .heartbeat(bpm: payload.bpm ?? 72); text = "Kalp atışı"
+            default:
+                kind = .text; text = "🔒 Bu mesaj bu telefonda açılamadı."
             }
             return LocalMessage(id: Self.uuid(for: message.id), text: text, isMine: message.senderID == myID,
                                 timestamp: message.createdAt ?? Date(),

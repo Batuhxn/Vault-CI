@@ -63,7 +63,7 @@ final class AppModel {
 
     func createCode() async {
         await run {
-            let created = try await self.backend.createPair()
+            let created = try await self.backend.createPair(publicKey: try self.myPublicKey())
             self.phase = .waitingForPartner(code: created.code, pairID: created.pairID)
             self.watch(created.pairID)
         }
@@ -71,7 +71,7 @@ final class AppModel {
 
     func join(code: String) async {
         await run {
-            try await self.backend.joinPair(code: code)
+            try await self.backend.joinPair(code: code, publicKey: try self.myPublicKey())
             await self.loadPair()
         }
     }
@@ -83,13 +83,29 @@ final class AppModel {
 
     // MARK: Internals
 
+    /// This device's public key for the signed-in account (identity created on first use).
+    private func myPublicKey() throws -> Data {
+        guard let me = backend.currentUserID else { throw BackendError.notSignedIn }
+        return try PairCrypto.identity(for: me).publicKey.rawRepresentation
+    }
+
+    private func session(for pair: PairInfo) -> PairCrypto.Session? {
+        guard let me = backend.currentUserID, let partner = pair.memberIDs.first(where: { $0 != me }) else { return nil }
+        return try? PairCrypto.session(pairID: pair.id, myID: me, partnerID: partner, publicKeys: pair.publicKeys)
+    }
+
     private func loadPair() async {
         do {
-            if let pair = try await backend.currentPair(), pair.isComplete {
+            let pairs = try await backend.currentPairs()
+            // Only a pair whose key this phone holds can be opened here.
+            if let pair = pairs.first(where: { session(for: $0) != nil }) {
                 enterPaired(pair)
                 watch(pair.id)
             } else {
                 phase = .unpaired
+                if !pairs.isEmpty {
+                    errorMessage = "Bu telefonda eski bağlantının şifreleme anahtarı yok. Uçtan uca şifreli yeni bir bağlantı kurun."
+                }
             }
         } catch {
             phase = .unpaired
@@ -110,18 +126,20 @@ final class AppModel {
     private func enterPaired(_ pair: PairInfo) {
         if let store, store.pair.id == pair.id {
             store.update(pair: pair)
-        } else if let me = backend.currentUserID {
+        } else if let me = backend.currentUserID, let session = session(for: pair) {
             store?.stop()
-            let fresh = WatchlinkStore(backend: backend, pair: pair, myID: me)
+            let fresh = WatchlinkStore(backend: backend, pair: pair, myID: me, session: session)
             fresh.start()
             store = fresh
+        } else {
+            return  // keys not in place yet (or not on this phone)
         }
         phase = .paired(pair)
-        // Each person names themselves once; the name travels with the pair.
+        // Each person names themselves once; the name travels sealed with the pair.
         let name = myName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let me = backend.currentUserID, pair.names[me] == nil, !name.isEmpty {
+        if let store, store.myName.isEmpty, !name.isEmpty {
             myName = ""
-            Task { try? await self.backend.saveMyName(name, pairID: pair.id) }
+            Task { await store.saveProfile(name: name) }
         }
     }
 

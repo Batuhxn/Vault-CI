@@ -13,10 +13,10 @@ struct UsView: View {
         me.name.isEmpty || partner.name.isEmpty ? "Siz\nikiniz." : "\(me.name)\n& \(partner.name)."
     }
 
-    /// Trust, in plain terms. No encryption claim: the MVP has none end-to-end.
+    /// Trust, in plain terms: sealed on the phones, readable only on these two.
     static func whereYouAre(_ state: SecurityState, connected: Bool) -> String {
         state == .secure && connected
-            ? "İki telefonunuz arasında bağlı. Buradakileri sadece ikiniz görebilirsiniz."
+            ? "İki telefonunuz arasında uçtan uca şifreli. Sunucu dahil kimse okuyamaz."
             : SecurityStatusView.label(state, connected: connected) + "."
     }
 
@@ -54,6 +54,20 @@ struct UsView: View {
                     .wlTitle()
                     .foregroundStyle(Room.ink)
                     .fixedSize(horizontal: false, vertical: true)
+                // Side by side, both phones must show the same six digits.
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(store.safetyCode)
+                        .font(.system(.title3, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(Room.sageDeep)
+                        .textSelection(.enabled)
+                    Text("Güvenlik kodu").font(.footnote).foregroundStyle(Room.ink3)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .wlCard(radius: 16)
+                .accessibilityElement(children: .combine)
+                Text("Telefonlarınızı yan yana koyun: bu kod ikisinde de aynıysa aranıza kimse girmemiş demektir.")
+                    .font(.subheadline)
+                    .foregroundStyle(Room.ink2)
             }
             Chapter(title: "Tarihler", marker: .open) {
                 if let next = relationship.snapshot.dates.sorted(by: { $0.date < $1.date }).first {

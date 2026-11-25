@@ -119,7 +119,7 @@ private struct ConversationSurface: View {
                     if store.messages.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("\(partner.shownName) ile bağlandınız.").wlTitle().foregroundStyle(Room.ink)
-                            Text("Burası artık sizin alanınız. Buradakileri sadece ikiniz görebilirsiniz.")
+                            Text("Burası artık sizin alanınız. Buradaki her şey uçtan uca şifreli; sadece ikiniz okuyabilirsiniz.")
                                 .font(.subheadline)
                                 .foregroundStyle(Room.ink2)
                         }

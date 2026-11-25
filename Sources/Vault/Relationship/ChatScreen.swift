@@ -488,7 +488,8 @@ private struct ZoomablePhoto: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(close: close) }
 
     func makeUIView(context: Context) -> UIScrollView {
-        let scroll = UIScrollView()
+        let scroll = LayoutAwareScrollView()
+        scroll.onLayout = { [weak coordinator = context.coordinator] in coordinator?.layout() }
         scroll.delegate = context.coordinator
         scroll.maximumZoomScale = 5
         scroll.minimumZoomScale = 1
@@ -542,7 +543,10 @@ private struct ZoomablePhoto: UIViewRepresentable {
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
         func scrollViewDidZoom(_ scrollView: UIScrollView) { center() }
-        func scrollViewDidLayoutSubviews(_ scrollView: UIScrollView) { layout() }
+
+        /// The dismiss pan and the scroll view's own pan may run together.
+        func gestureRecognizer(_ gesture: UIGestureRecognizer,
+                               shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 
         /// Keeps a smaller-than-screen image centred instead of pinned top-left.
         private func center() {
@@ -593,5 +597,15 @@ private struct ZoomablePhoto: UIViewRepresentable {
             let velocity = pan.velocity(in: scroll)
             return scroll.zoomScale <= scroll.minimumZoomScale + 0.01 && velocity.y > abs(velocity.x)
         }
+    }
+}
+
+/// Reports every layout pass, so the photo is fitted once the real size is known
+/// (SwiftUI may create the view at zero size and never call update again).
+private final class LayoutAwareScrollView: UIScrollView {
+    var onLayout: (() -> Void)?
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayout?()
     }
 }

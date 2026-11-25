@@ -179,7 +179,7 @@ jobs:
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Watchlink.xcarchive" \
             -derivedDataPath "$RUNNER_TEMP/watchlink-derived" \
-            MARKETING_VERSION=0.1.0 \
+            MARKETING_VERSION=0.1.1 \
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
           test -d "$RUNNER_TEMP/Watchlink.xcarchive/Products/Applications/Vault-App.app" \
             || { echo "::error::archive has no Vault-App.app"; exit 1; }
@@ -247,7 +247,7 @@ jobs:
           plist_expect CFBundleIdentifier "$BUNDLE_ID"
           plist_expect CFBundleDisplayName Watchlink
           plist_expect CFBundleExecutable Vault-App
-          plist_expect CFBundleShortVersionString 0.1.0
+          plist_expect CFBundleShortVersionString 0.1.1
           plist_expect CFBundleVersion "$BUILD_NUMBER"
 
           codesign --verify --deep --strict "$app" || fail "codesign verification failed"

@@ -19,6 +19,8 @@ struct ChatScreen: View {
     @State private var sendProblem: String?
     @State private var sentCount = 0
     @State private var pickedPhoto: PhotosPickerItem?
+    /// Whether the end of the transcript is on screen (incoming messages only follow then).
+    @State private var atBottom = true
     @FocusState private var composing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -173,6 +175,13 @@ struct ChatScreen: View {
                     ForEach(runs) { run in
                         MessageRunView(run: run, reduceMotion: reduceMotion).id(run.id)
                     }
+                    // The true end of the conversation: what "scroll to the newest" aims at.
+                    // Visible (or about to be) means the reader is at the bottom.
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomID)
+                        .onAppear { atBottom = true }
+                        .onDisappear { atBottom = false }
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
@@ -181,11 +190,28 @@ struct ChatScreen: View {
             .scrollDismissesKeyboard(.interactively)
             // Incoming messages settle on the same spring; sends are already inside withAnimation.
             .animation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion), value: store.messages.count)
-            .onChange(of: store.messages.count) { _, _ in
-                guard let last = runs.last else { return }
-                withAnimation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)) {
-                    proxy.scrollTo(last.id, anchor: .bottom)
-                }
+            // Follow the newest message: always for our own sends, and for the partner's
+            // only when already at the bottom (reading older messages is never interrupted).
+            .onChange(of: store.messages.last?.id) { _, _ in
+                guard let last = store.messages.last, last.isMine || atBottom else { return }
+                scrollToBottom(proxy)
+            }
+            // Opening the keyboard shrinks the view: keep the newest message in sight.
+            .onChange(of: composing) { _, isComposing in
+                if isComposing { scrollToBottom(proxy) }
+            }
+        }
+    }
+
+    private static let bottomID = "watchlink.transcript.bottom"
+
+    /// Waits a beat so the new bubble is laid out (LazyVStack measures it late),
+    /// then glides to the true bottom instead of jumping to an estimate.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(40))
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.38)) {
+                proxy.scrollTo(Self.bottomID, anchor: .bottom)
             }
         }
     }

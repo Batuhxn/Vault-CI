@@ -7,8 +7,8 @@ import UserNotifications
 /// notification plus the still-sealed message. Neither the Worker nor Apple
 /// can read it; the partner's notification extension opens it on the phone.
 enum PushConfig {
-    /// `nil` until the Worker is deployed: sending works, pushes are skipped.
-    static let endpoint: URL? = nil
+    /// `nil` would skip pushes (sending still works).
+    static let endpoint: URL? = URL(string: "https://watchlink-push.watchlink-relay.workers.dev")
 }
 
 /// Notification permission and this device's APNs token.

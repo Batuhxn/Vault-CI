@@ -19,6 +19,8 @@ struct BackendMessage: Identifiable, Equatable {
     let kind: BackendMessageKind
     /// `nil` while the server timestamp is still pending (local echo).
     let createdAt: Date?
+    /// True until the server has acknowledged the write.
+    var pending: Bool = false
 }
 
 struct PairInfo: Equatable {
@@ -26,6 +28,8 @@ struct PairInfo: Equatable {
     let memberIDs: [String]
     /// Recorded heartbeat of each member, keyed by member id.
     let bpm: [String: Int]
+    /// Display name each member chose, keyed by member id.
+    var names: [String: String] = [:]
     var isComplete: Bool { memberIDs.count == 2 }
 }
 
@@ -54,13 +58,16 @@ protocol ChatBackend: AnyObject {
 
     // Messages.
     func observeMessages(pairID: String, limit: Int, onChange: @escaping ([BackendMessage]) -> Void) -> ListenerToken
-    func sendText(_ text: String, pairID: String) async throws
+    /// `id` is chosen by the caller (a UUID string) so a local echo and the
+    /// server copy are the same message.
+    func sendText(_ text: String, id: String, pairID: String) async throws
     /// `jpeg` must already be compressed by the caller (`PhotoCompressor`, <= 900 KB).
-    func sendPhoto(_ jpeg: Data, pairID: String) async throws
+    func sendPhoto(_ jpeg: Data, id: String, pairID: String) async throws
     func loadPhoto(photoID: String, pairID: String) async throws -> Data
-    func sendHeartbeat(bpm: Int, pairID: String) async throws
+    func sendHeartbeat(bpm: Int, id: String, pairID: String) async throws
 
-    // Heartbeat + push.
+    // Profile, heartbeat, push.
+    func saveMyName(_ name: String, pairID: String) async throws
     func saveMyBPM(_ bpm: Int, pairID: String) async throws
     func registerPushToken(_ token: String) async throws
 }

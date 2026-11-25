@@ -1,6 +1,10 @@
 import AuthenticationServices
 import SwiftUI
 
+private typealias Room = WatchlinkStyle.Room
+
+/// Sign in -> pair -> RelationshipShell. The pre-pair screens use the same
+/// room (cream ground, serif headline, one sage action) as Stage 2.
 struct AppRootView: View {
     @State var model: AppModel
 
@@ -8,27 +12,28 @@ struct AppRootView: View {
         Group {
             switch model.phase {
             case .loading:
-                ProgressView().tint(WatchlinkStyle.tint)
+                ScreenScaffold { ProgressView().tint(Room.sage).frame(maxHeight: .infinity) }
             case .signedOut:
                 WelcomeScreen(model: model)
             case .unpaired:
                 PairScreen(model: model)
             case .waitingForPartner(let code, _):
                 WaitingScreen(model: model, code: code)
-            case .paired(let pair):
-                MainTabView(model: model, pair: pair)
+            case .paired:
+                if let store = model.store {
+                    RelationshipShell(store: store)
+                } else {
+                    ScreenScaffold { ProgressView().tint(Room.sage).frame(maxHeight: .infinity) }
+                }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WatchlinkStyle.background.ignoresSafeArea())
-        .foregroundStyle(WatchlinkStyle.text)
-        .tint(WatchlinkStyle.tint)
+        .preferredColorScheme(.light)  // Stage 2 is light-only until a dark theme ships
         .task { await model.start() }
         .alert("Watchlink", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
-            Button("Tamam", role: .cancel) { }
+            Button("OK", role: .cancel) { }
         } message: { Text(model.errorMessage ?? "") }
     }
 }
@@ -38,22 +43,20 @@ struct AppRootView: View {
 private struct WelcomeScreen: View {
     let model: AppModel
     @State private var nonce = ""
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack {
-            Spacer()
-            VStack(spacing: 24) {
-                WatchlinkMark()
-                VStack(spacing: 8) {
-                    Text("Watchlink").font(.system(size: 28, weight: .semibold))
-                    Text("İki kişi arasında sessiz, özel bir hat.")
-                        .font(.system(size: 17)).foregroundStyle(WatchlinkStyle.secondary)
-                        .multilineTextAlignment(.center).frame(maxWidth: 280)
-                }
-            }
-            Spacer()
-            VStack(spacing: 16) {
+        ScreenScaffold {
+            VStack(alignment: .leading, spacing: 0) {
+                HeadlineBlock(meta: "Watchlink", headline: "A quiet line,\nfor two.")
+                Text("One private space between your phone and theirs.")
+                    .font(.body)
+                    .foregroundStyle(Room.ink2)
+                    .padding(.horizontal, screenMargin)
+                    .padding(.top, 14)
+                Spacer()
+                PairMonogram(partner: "", me: "")
+                    .frame(maxWidth: .infinity)
+                Spacer()
                 SignInWithAppleButton(.signIn) { request in
                     nonce = AppleSignIn.randomNonce()
                     request.requestedScopes = [.fullName]
@@ -63,20 +66,24 @@ private struct WelcomeScreen: View {
                           let token = AppleSignIn.token(from: authorization) else {
                         if case .failure(let error) = result,
                            (error as? ASAuthorizationError)?.code != .canceled {
-                            model.errorMessage = "Apple ile giriş tamamlanamadı."
+                            model.errorMessage = "Sign in with Apple didn't finish."
                         }
                         return
                     }
                     Task { await model.signIn(idToken: token.idToken, rawNonce: nonce, fullName: token.fullName) }
                 }
-                .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
+                .signInWithAppleButtonStyle(.black)
                 .frame(height: 50)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .clipShape(Capsule())
                 .disabled(model.busy)
-
-                Text("by Batuhxn").font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
+                .padding(.horizontal, screenMargin)
+                Text("by Batuhxn")
+                    .wlWhisper()
+                    .foregroundStyle(Room.ink3)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 14)
+                    .padding(.bottom, 24)
             }
-            .padding(.horizontal, 24).padding(.bottom, 34)
         }
     }
 }
@@ -84,45 +91,81 @@ private struct WelcomeScreen: View {
 // MARK: - Pair
 
 private struct PairScreen: View {
-    let model: AppModel
+    @Bindable var model: AppModel
     @State private var code = ""
-    @FocusState private var focused: Bool
+    @FocusState private var focus: Field?
+    private enum Field { case name, code }
+
+    private var nameReady: Bool { !model.myName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            WatchlinkMark(size: 72)
-            Text("Bağlantı kur").font(.system(size: 28, weight: .semibold))
-            Text("Biriniz kod oluştursun, diğeriniz o kodu girsin.")
-                .font(.system(size: 17)).foregroundStyle(WatchlinkStyle.secondary)
-                .multilineTextAlignment(.center).padding(.horizontal, 32)
-            Spacer()
+        ScreenScaffold {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    HeadlineBlock(meta: "Linking", headline: "Find each\nother.")
+                    Text("One of you makes a code. The other types it in.")
+                        .font(.body)
+                        .foregroundStyle(Room.ink2)
+                        .padding(.horizontal, screenMargin)
+                        .padding(.top, 14)
 
-            WatchlinkPrimaryButton(title: "Kod oluştur") { Task { await model.createCode() } }
-                .disabled(model.busy)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Your name").font(.footnote.weight(.semibold)).foregroundStyle(Room.sage)
+                        TextField("How your partner will see you", text: $model.myName)
+                            .textContentType(.givenName)
+                            .focused($focus, equals: .name)
+                            .submitLabel(.done)
+                            .padding(.horizontal, 16).frame(height: 50)
+                            .wlCard(radius: 18)
+                    }
+                    .padding(.horizontal, screenMargin)
+                    .padding(.top, 40)
 
-            HStack(spacing: 10) {
-                TextField("Kodu gir", text: $code)
-                    .textInputAutocapitalization(.characters)
-                    .autocorrectionDisabled()
-                    .font(.system(size: 20, weight: .semibold, design: .monospaced))
-                    .focused($focused)
-                    .padding(.horizontal, 14).frame(height: 50)
-                    .background(WatchlinkStyle.surface, in: RoundedRectangle(cornerRadius: 14))
-                    .onChange(of: code) { _, value in code = String(value.uppercased().prefix(8)) }
-                Button("Katıl") { focused = false; Task { await model.join(code: code) } }
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 84, height: 50)
-                    .background(WatchlinkStyle.soft, in: RoundedRectangle(cornerRadius: 14))
-                    .disabled(code.count != 8 || model.busy)
+                    VStack(spacing: 12) {
+                        Button { focus = nil; Task { await model.createCode() } } label: {
+                            Text("Make a code")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Room.cream)
+                                .frame(maxWidth: .infinity, minHeight: 50)
+                                .background(Room.sage, in: Capsule())
+                        }
+                        .buttonStyle(Pressable())
+
+                        Text("or").wlWhisper().foregroundStyle(Room.ink3)
+
+                        HStack(spacing: 10) {
+                            TextField("Their code", text: $code)
+                                .textInputAutocapitalization(.characters)
+                                .autocorrectionDisabled()
+                                .font(.system(.title3, design: .monospaced).weight(.semibold))
+                                .focused($focus, equals: .code)
+                                .padding(.horizontal, 16).frame(height: 50)
+                                .wlCard(radius: 18)
+                                .onChange(of: code) { _, value in code = String(value.uppercased().prefix(8)) }
+                            Button("Join") { focus = nil; Task { await model.join(code: code) } }
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Room.sageDeep)
+                                .frame(width: 80, height: 50)
+                                .background(Room.control, in: Capsule())
+                                .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
+                                .disabled(code.count != 8)
+                        }
+                    }
+                    .disabled(!nameReady || model.busy)
+                    .padding(.horizontal, screenMargin)
+                    .padding(.top, 28)
+
+                    Button("Sign out") { model.signOut() }
+                        .font(.footnote)
+                        .foregroundStyle(Room.ink3)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 36)
+                        .padding(.bottom, 24)
+                }
             }
-
-            Button("Çıkış yap") { model.signOut() }
-                .font(.system(size: 13)).foregroundStyle(WatchlinkStyle.secondary)
-                .padding(.top, 4)
+            .scrollDismissesKeyboard(.interactively)
+            .overlay { if model.busy { ProgressView().tint(Room.sage) } }
         }
-        .padding(24)
-        .overlay { if model.busy { ProgressView() } }
     }
 }
 
@@ -131,28 +174,42 @@ private struct WaitingScreen: View {
     let code: String
 
     var body: some View {
-        VStack(spacing: 18) {
-            Spacer()
-            Text("Bağlantı kodun").font(.system(size: 17)).foregroundStyle(WatchlinkStyle.secondary)
-            Text(code.chunked(by: 4))
-                .font(.system(size: 40, weight: .semibold, design: .monospaced))
-                .textSelection(.enabled)
-                .padding(.horizontal, 24).padding(.vertical, 18)
-                .background(WatchlinkStyle.surface, in: RoundedRectangle(cornerRadius: 20))
-            Text("Bu kodu diğer telefonda gir. 15 dakika geçerli.")
-                .font(.system(size: 15)).foregroundStyle(WatchlinkStyle.secondary)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.8)
-                Text("Bekleniyor…").font(.system(size: 13))
-            }.foregroundStyle(WatchlinkStyle.secondary).padding(.top, 8)
-            Spacer()
-            Button("Vazgeç") { model.cancelWaiting() }
-                .font(.system(size: 17, weight: .semibold))
-                .frame(maxWidth: .infinity).frame(height: 50)
-                .background(WatchlinkStyle.soft, in: RoundedRectangle(cornerRadius: 14))
+        ScreenScaffold {
+            VStack(alignment: .leading, spacing: 0) {
+                HeadlineBlock(meta: "Your code", headline: "Waiting for\nthem.")
+                Text(code.chunked(by: 4))
+                    .font(.system(size: 38, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(Room.ink)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 22)
+                    .wlCard()
+                    .padding(.horizontal, screenMargin)
+                    .padding(.top, 36)
+                Text("Type this on their phone. It works for 15 minutes.")
+                    .font(.subheadline)
+                    .foregroundStyle(Room.ink2)
+                    .padding(.horizontal, screenMargin)
+                    .padding(.top, 16)
+                HStack(spacing: 8) {
+                    ProgressView().tint(Room.ink3).scaleEffect(0.8)
+                    Text("Listening for your partner").wlWhisper().foregroundStyle(Room.ink3)
+                }
+                .padding(.horizontal, screenMargin)
+                .padding(.top, 12)
+                Spacer()
+                Button { model.cancelWaiting() } label: {
+                    Text("Cancel")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Room.sageDeep)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                        .background(Room.control, in: Capsule())
+                }
+                .buttonStyle(Pressable())
+                .padding(.horizontal, screenMargin)
+                .padding(.bottom, 24)
+            }
         }
-        .padding(24)
     }
 }
 

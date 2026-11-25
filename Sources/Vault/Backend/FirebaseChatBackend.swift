@@ -7,7 +7,7 @@ import Foundation
 /// Data model (enforced by firebase/firestore.rules):
 ///   users/{uid}                     { fcmToken }                       self-only, write-only
 ///   codes/{code}                    { pairId, creator, expiresAt }     get-by-id only
-///   pairs/{pairId}                  { members, createdAt, joinOpenUntil, bpm.{uid} }
+///   pairs/{pairId}                  { members, createdAt, joinOpenUntil, bpm.{uid}, names.{uid} }
 ///   pairs/{pairId}/messages/{id}    { sender, type, text | photoId | bpm, createdAt }
 ///   pairs/{pairId}/photos/{id}      { sender, image (bytes <= 900 KB), createdAt }
 ///
@@ -111,20 +111,20 @@ final class FirebaseChatBackend: ChatBackend {
         let registration = messages(pairID)
             .order(by: "createdAt", descending: true)
             .limit(to: limit)
-            .addSnapshotListener(includeMetadataChanges: false) { snapshot, _ in
+            .addSnapshotListener(includeMetadataChanges: true) { snapshot, _ in
                 guard let snapshot else { return }
                 onChange(snapshot.documents.compactMap(Self.message(from:)).reversed())
             }
         return FirestoreListener(registration)
     }
 
-    func sendText(_ text: String, pairID: String) async throws {
+    func sendText(_ text: String, id: String, pairID: String) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        try await post(pairID, ["type": "text", "text": String(trimmed.prefix(4000))])
+        try await post(pairID, id: id, ["type": "text", "text": String(trimmed.prefix(4000))])
     }
 
-    func sendPhoto(_ jpeg: Data, pairID: String) async throws {
+    func sendPhoto(_ jpeg: Data, id: String, pairID: String) async throws {
         guard jpeg.count <= Self.maxPhotoBytes else { throw BackendError.photoTooLarge }
         let me = try uid()
         let photo = db.collection("pairs").document(pairID).collection("photos").document()
@@ -133,7 +133,7 @@ final class FirebaseChatBackend: ChatBackend {
             "image": jpeg,
             "createdAt": FieldValue.serverTimestamp(),
         ])
-        try await post(pairID, ["type": "photo", "photoId": photo.documentID])
+        try await post(pairID, id: id, ["type": "photo", "photoId": photo.documentID])
     }
 
     func loadPhoto(photoID: String, pairID: String) async throws -> Data {
@@ -143,11 +143,18 @@ final class FirebaseChatBackend: ChatBackend {
         return data
     }
 
-    func sendHeartbeat(bpm: Int, pairID: String) async throws {
-        try await post(pairID, ["type": "heartbeat", "bpm": min(max(bpm, 40), 180)])
+    func sendHeartbeat(bpm: Int, id: String, pairID: String) async throws {
+        try await post(pairID, id: id, ["type": "heartbeat", "bpm": min(max(bpm, 40), 180)])
     }
 
     // MARK: Heartbeat + push
+
+    func saveMyName(_ name: String, pairID: String) async throws {
+        let me = try uid()
+        let trimmed = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        guard !trimmed.isEmpty else { return }
+        try await db.collection("pairs").document(pairID).updateData(["names.\(me)": trimmed])
+    }
 
     func saveMyBPM(_ bpm: Int, pairID: String) async throws {
         let me = try uid()
@@ -165,17 +172,18 @@ final class FirebaseChatBackend: ChatBackend {
         db.collection("pairs").document(pairID).collection("messages")
     }
 
-    private func post(_ pairID: String, _ fields: [String: Any]) async throws {
+    private func post(_ pairID: String, id: String, _ fields: [String: Any]) async throws {
         var data = fields
         data["sender"] = try uid()
         data["createdAt"] = FieldValue.serverTimestamp()
-        try await messages(pairID).addDocument(data: data)
+        try await messages(pairID).document(id).setData(data)
     }
 
     private nonisolated static func pair(from snapshot: DocumentSnapshot) -> PairInfo? {
         guard let data = snapshot.data(), let members = data["members"] as? [String] else { return nil }
         let bpm = (data["bpm"] as? [String: Any] ?? [:]).compactMapValues { ($0 as? NSNumber)?.intValue }
-        return PairInfo(id: snapshot.documentID, memberIDs: members, bpm: bpm)
+        let names = (data["names"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
+        return PairInfo(id: snapshot.documentID, memberIDs: members, bpm: bpm, names: names)
     }
 
     private nonisolated static func message(from snapshot: QueryDocumentSnapshot) -> BackendMessage? {
@@ -195,8 +203,10 @@ final class FirebaseChatBackend: ChatBackend {
         default:
             return nil
         }
-        let created = (data["createdAt"] as? Timestamp)?.dateValue()
-        return BackendMessage(id: snapshot.documentID, senderID: sender, kind: kind, createdAt: created)
+        // Pending server timestamps read as nil; estimate them so local echoes sort last.
+        let created = (snapshot.get("createdAt", serverTimestampBehavior: .estimate) as? Timestamp)?.dateValue()
+        return BackendMessage(id: snapshot.documentID, senderID: sender, kind: kind, createdAt: created,
+                              pending: snapshot.metadata.hasPendingWrites)
     }
 }
 

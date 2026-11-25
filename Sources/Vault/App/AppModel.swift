@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// Top-level flow: sign in -> pair -> main tabs.
+/// Top-level flow: sign in -> pair -> the relationship shell.
 @MainActor @Observable
 final class AppModel {
     enum Phase: Equatable {
@@ -14,8 +14,12 @@ final class AppModel {
     }
 
     private(set) var phase: Phase = .loading
+    /// The conversation for the current pair, kept across re-renders.
+    private(set) var store: WatchlinkStore?
     var errorMessage: String?
     var busy = false
+    /// The name typed on the pair screen, saved to the pair once it is complete.
+    var myName = ""
 
     let backend: any ChatBackend
     @ObservationIgnored private var pairListener: (any ListenerToken)?
@@ -32,6 +36,7 @@ final class AppModel {
     // MARK: Sign-in
 
     func signIn(idToken: String, rawNonce: String, fullName: PersonNameComponents?) async {
+        if myName.isEmpty, let given = fullName?.givenName { myName = given }
         await run {
             try await self.backend.signInWithApple(idToken: idToken, rawNonce: rawNonce, fullName: fullName)
             await self.loadPair()
@@ -40,6 +45,8 @@ final class AppModel {
 
     func signOut() {
         pairListener?.cancel()
+        store?.stop()
+        store = nil
         try? backend.signOut()
         phase = .signedOut
     }
@@ -66,19 +73,12 @@ final class AppModel {
         phase = .unpaired
     }
 
-    // MARK: Heartbeat
-
-    func saveMyBPM(_ bpm: Int) async {
-        guard case .paired(let pair) = phase else { return }
-        await run { try await self.backend.saveMyBPM(bpm, pairID: pair.id) }
-    }
-
     // MARK: Internals
 
     private func loadPair() async {
         do {
             if let pair = try await backend.currentPair(), pair.isComplete {
-                phase = .paired(pair)
+                enterPaired(pair)
                 watch(pair.id)
             } else {
                 phase = .unpaired
@@ -94,8 +94,26 @@ final class AppModel {
         pairListener = backend.observePair(pairID) { [weak self] pair in
             Task { @MainActor in
                 guard let self else { return }
-                if pair.isComplete { self.phase = .paired(pair) }
+                if pair.isComplete { self.enterPaired(pair) }
             }
+        }
+    }
+
+    private func enterPaired(_ pair: PairInfo) {
+        if let store, store.pair.id == pair.id {
+            store.update(pair: pair)
+        } else if let me = backend.currentUserID {
+            store?.stop()
+            let fresh = WatchlinkStore(backend: backend, pair: pair, myID: me)
+            fresh.start()
+            store = fresh
+        }
+        phase = .paired(pair)
+        // Each person names themselves once; the name travels with the pair.
+        let name = myName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let me = backend.currentUserID, pair.names[me] == nil, !name.isEmpty {
+            myName = ""
+            Task { try? await self.backend.saveMyName(name, pairID: pair.id) }
         }
     }
 
@@ -108,13 +126,13 @@ final class AppModel {
 
     static func describe(_ error: Error) -> String {
         switch error as? BackendError {
-        case .invalidCode: return "Kod geçersiz. 8 karakteri kontrol et."
-        case .codeExpired: return "Kodun süresi dolmuş. Yeni bir kod iste."
-        case .pairFull: return "Bu bağlantı dolu ya da süresi geçmiş."
-        case .photoTooLarge: return "Fotoğraf çok büyük."
-        case .notSignedIn: return "Önce giriş yapmalısın."
-        case .noPair: return "Bağlantı bulunamadı."
-        case nil: return "Bir şeyler ters gitti. Bağlantını kontrol edip tekrar dene."
+        case .invalidCode: return "That code doesn't look right. Check all 8 characters."
+        case .codeExpired: return "That code has expired. Ask for a new one."
+        case .pairFull: return "That link is already complete or has expired."
+        case .photoTooLarge: return "That photo is too large."
+        case .notSignedIn: return "Please sign in first."
+        case .noPair: return "No link found."
+        case nil: return "Something went wrong. Check your connection and try again."
         }
     }
 }

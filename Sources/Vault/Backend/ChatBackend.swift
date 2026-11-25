@@ -69,6 +69,11 @@ protocol ChatBackend: AnyObject {
     // Profile (sealed name, rhythm, push address).
     func saveSealedProfile(_ sealed: Data, pairID: String) async throws
 
+    // Presence (sealed: typing, in the chat, read up to). One small document per member.
+    func setPresence(_ sealed: Data, pairID: String) async throws
+    /// The member's sealed presence and the server time it was written (nil while pending).
+    func observePresence(pairID: String, member: String, onChange: @escaping (Data?, Date?) -> Void) -> ListenerToken
+
     /// A short-lived proof of this sign-in, shown to the push Worker so it can
     /// check (through the same security rules) that the message is really ours.
     func idToken() async throws -> String

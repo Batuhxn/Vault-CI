@@ -158,6 +158,21 @@ final class FirebaseChatBackend: ChatBackend {
         try await db.collection("pairs").document(pairID).updateData(["sealed.\(me)": sealed])
     }
 
+    func setPresence(_ sealed: Data, pairID: String) async throws {
+        let me = try uid()
+        try await db.collection("pairs").document(pairID).collection("presence").document(me)
+            .setData(["ct": sealed, "at": FieldValue.serverTimestamp()])
+    }
+
+    func observePresence(pairID: String, member: String, onChange: @escaping (Data?, Date?) -> Void) -> ListenerToken {
+        let registration = db.collection("pairs").document(pairID).collection("presence").document(member)
+            .addSnapshotListener { snapshot, _ in
+                let data = snapshot?.data()
+                onChange(data?["ct"] as? Data, (data?["at"] as? Timestamp)?.dateValue())
+            }
+        return FirestoreListener(registration)
+    }
+
     func idToken() async throws -> String {
         guard let user = auth.currentUser else { throw BackendError.notSignedIn }
         return try await user.getIDToken()

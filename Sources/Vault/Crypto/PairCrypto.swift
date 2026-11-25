@@ -107,6 +107,7 @@ enum PairCrypto {
         func photoAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|photo|\(pairID)|\(sender)|\(id)" }
         func voiceAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|voice|\(pairID)|\(sender)|\(id)" }
         func profileAAD(of member: String) -> String { "\(PairCrypto.version)|profile|\(pairID)|\(member)" }
+        func presenceAAD(of member: String) -> String { "\(PairCrypto.version)|presence|\(pairID)|\(member)" }
 
         /// The raw pair key, handed to the notification extension through the
         /// shared Keychain group (this device only) so it can open pushes.
@@ -165,6 +166,14 @@ struct SealedPayload: Codable, Equatable {
     var emoji: String?
     /// Reply: the message this one answers (the quote is drawn on the phone).
     var replyTo: String?
+}
+
+/// A member's live state, sealed: typing, has the chat open, has read up to a message.
+/// The server only sees that the small presence document changed, and when.
+struct SealedPresence: Codable, Equatable {
+    var typing = false
+    var here = false
+    var read: String?
 }
 
 /// A member's sealed profile: the name they chose, their recorded rhythm and

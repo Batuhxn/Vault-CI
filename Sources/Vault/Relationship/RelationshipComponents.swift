@@ -122,6 +122,8 @@ struct ConversationHeader: View {
     let state: SecurityState
     let connected: Bool
     var presence = PartnerPresence.unknown
+    /// The partner is writing: says so in place of the encryption line.
+    var typing = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -132,8 +134,16 @@ struct ConversationHeader: View {
                 }
             VStack(alignment: .leading, spacing: 1) {
                 Text(partner.shownName).wlTitle().foregroundStyle(Room.ink).lineLimit(1)
-                EncryptionLabel(state: state, connected: connected)
+                if typing {
+                    Text("yazıyor…")
+                        .font(.footnote)
+                        .foregroundStyle(Room.sage)
+                        .transition(.opacity)
+                } else {
+                    EncryptionLabel(state: state, connected: connected)
+                }
             }
+            .animation(.easeOut(duration: 0.2), value: typing)
         }
     }
 }

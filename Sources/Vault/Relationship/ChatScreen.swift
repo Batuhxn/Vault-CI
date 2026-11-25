@@ -31,6 +31,9 @@ struct ChatScreen: View {
     private static let cancelDistance: CGFloat = 90
     @FocusState private var composing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    /// On screen (the partner sees "here", and what's shown counts as read).
+    @State private var visible = false
 
     /// Sender-side states only. M1.7 "sent" means the relay accepted the ciphertext,
     /// not that the partner received it, so nothing here ever says "Delivered".
@@ -74,9 +77,19 @@ struct ChatScreen: View {
                 }
         )
         .sensoryFeedback(RelationshipMotion.sendFeedback, trigger: sentCount)
+        .onAppear {
+            visible = true
+            store.setViewing(scenePhase == .active)
+        }
         .onDisappear {
+            visible = false
+            store.setViewing(false)
             VoicePlayer.shared.stop()
             recorder.cancel()
+        }
+        .onChange(of: scenePhase) { _, phase in store.setViewing(visible && phase == .active) }
+        .onChange(of: draft) { _, text in
+            store.setTyping(!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .alert("Mesaj gönderilemedi", isPresented: Binding(get: { sendProblem != nil }, set: { if !$0 { sendProblem = nil } })) {
             Button("Tamam", role: .cancel) { }
@@ -146,7 +159,8 @@ struct ChatScreen: View {
             }
             .buttonStyle(Pressable(scale: RelationshipMotion.pressControl))
             .accessibilityLabel("Ana Sayfa'ya dön")
-            ConversationHeader(partner: partner, state: store.securityState, connected: store.connectionAvailable)
+            ConversationHeader(partner: partner, state: store.securityState, connected: store.connectionAvailable,
+                               presence: store.partnerHere ? .together : .unknown, typing: store.partnerTyping)
             Spacer(minLength: 0)
             Button(action: openPrivate) {
                 Image(systemName: "moon")
@@ -187,6 +201,12 @@ struct ChatScreen: View {
                     ForEach(runs) { run in
                         MessageRunView(run: run, reduceMotion: reduceMotion).id(run.id)
                     }
+                    if store.partnerTyping {
+                        TypingBubble()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 12)
+                            .wlTransition(.opacity.combined(with: .scale(scale: 0.8, anchor: .bottomLeading)), reduceMotion: reduceMotion)
+                    }
                     // The true end of the conversation: what "scroll to the newest" aims at.
                     // Visible (or about to be) means the reader is at the bottom.
                     Color.clear
@@ -215,6 +235,9 @@ struct ChatScreen: View {
             .onChange(of: store.messages.last?.id) { _, _ in
                 guard let last = store.messages.last, last.isMine || atBottom else { return }
                 scrollToBottom(proxy)
+            }
+            .onChange(of: store.partnerTyping) { _, typing in
+                if typing && atBottom { scrollToBottom(proxy) }
             }
             // Opening the keyboard shrinks the view: keep the newest message in sight.
             .onChange(of: composing) { _, isComposing in
@@ -482,7 +505,7 @@ struct MessageRun: Identifiable, Equatable {
         guard last.isMine else { return time }
         switch last.delivery {
         case .pending, .sending, .failed: return "\(time) · \(ChatScreen.deliveryLabel(last.delivery))"
-        case .sent, .delivered: return time
+        case .sent, .delivered: return last.seen ? "\(time) · Görüldü" : time
         }
     }
 }
@@ -797,6 +820,31 @@ private struct ReplyBar: View {
         .padding(.vertical, 8)
         .background(Room.paper.opacity(0.96), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Room.ink.opacity(0.07), lineWidth: 1))
+    }
+}
+
+/// Three soft dots while the partner writes.
+private struct TypingBubble: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 5) {
+                ForEach(0..<3, id: \.self) { index in
+                    let phase = reduceMotion ? 0 : sin((t * 5) - Double(index) * 0.9)
+                    Circle()
+                        .fill(Room.ink3.opacity(0.45 + 0.35 * max(phase, 0)))
+                        .frame(width: 7, height: 7)
+                        .offset(y: -3 * max(phase, 0))
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Room.paper, in: Capsule())
+        .overlay(Capsule().stroke(Room.ink.opacity(0.06), lineWidth: 1))
+        .accessibilityLabel("Yazıyor")
     }
 }
 

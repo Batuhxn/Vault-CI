@@ -53,6 +53,8 @@ struct LocalMessage: Identifiable, Equatable {
     var quote: Quote?
     /// At most one per person (two people, two reactions).
     var reactions: [Reaction] = []
+    /// Mine only: the latest of my messages the partner has had on screen.
+    var seen = false
 
     /// One line for quotes and previews.
     var snippet: String {
@@ -120,6 +122,9 @@ final class WatchlinkStore {
     private(set) var pair: PairInfo
     /// A heartbeat the partner sent while the app was open; the shell plays it, then clears it.
     var incomingHeartbeat: Int?
+    /// The partner is writing right now / has the conversation open.
+    private(set) var partnerTyping = false
+    private(set) var partnerHere = false
 
     var securityState: SecurityState { pair.isComplete ? .secure : .pairing }
     var canSend: Bool { securityState.canSend }
@@ -147,6 +152,16 @@ final class WatchlinkStore {
     @ObservationIgnored private var voiceCache: [String: Data] = [:]
     /// My reactions sent but not yet back from the server: target id -> (reaction message id, emoji).
     @ObservationIgnored private var pendingReactions: [String: (id: String, emoji: String)] = [:]
+    // Presence (mine is written, the partner's is observed).
+    @ObservationIgnored private var presenceListener: (any ListenerToken)?
+    @ObservationIgnored private var myPresence = SealedPresence()
+    @ObservationIgnored private var lastPresenceWrite = Date.distantPast
+    @ObservationIgnored private var viewing = false
+    @ObservationIgnored private var partnerRead: String?
+    @ObservationIgnored private var typingIdle: Task<Void, Never>?
+    @ObservationIgnored private var hereBeat: Task<Void, Never>?
+    @ObservationIgnored private var partnerTypingExpiry: Task<Void, Never>?
+    @ObservationIgnored private var partnerHereExpiry: Task<Void, Never>?
 
     init(backend: any ChatBackend, pair: PairInfo, myID: String, session: PairCrypto.Session) {
         self.backend = backend
@@ -167,10 +182,17 @@ final class WatchlinkStore {
         }
         monitor.start(queue: DispatchQueue(label: "watchlink.path"))
         self.monitor = monitor
+        if let partnerID {
+            presenceListener = backend.observePresence(pairID: pair.id, member: partnerID) { [weak self] sealed, at in
+                Task { @MainActor in self?.receivePresence(sealed, at: at) }
+            }
+        }
     }
 
     func stop() {
         listener?.cancel(); listener = nil
+        presenceListener?.cancel(); presenceListener = nil
+        for task in [typingIdle, hereBeat, partnerTypingExpiry, partnerHereExpiry] { task?.cancel() }
         monitor?.cancel(); monitor = nil
     }
 
@@ -215,6 +237,91 @@ final class WatchlinkStore {
 
     /// This device's APNs token; only the partner's phone can read it.
     func savePushToken(_ token: String) async { await saveProfile(push: token) }
+
+    // MARK: Presence
+
+    /// The chat is on screen (and the app active): say so, keep it fresh, and mark what's read.
+    func setViewing(_ isViewing: Bool) {
+        guard isViewing != viewing else { return }
+        viewing = isViewing
+        myPresence.here = isViewing
+        if !isViewing { myPresence.typing = false }
+        if isViewing, let latest = latestReadable { myPresence.read = latest }
+        writePresence()
+        hereBeat?.cancel()
+        guard isViewing else { return }
+        // "Here" fades on the other phone after two minutes of silence; refresh well before.
+        hereBeat = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(45))
+                guard let self, self.viewing else { return }
+                self.writePresence()
+            }
+        }
+    }
+
+    /// Called as the draft changes. Refreshed every few seconds while typing; clears
+    /// itself after a pause, so a half-written draft doesn't say "typing" forever.
+    func setTyping(_ typing: Bool) {
+        typingIdle?.cancel()
+        if typing {
+            typingIdle = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !Task.isCancelled, self.myPresence.typing else { return }
+                self.myPresence.typing = false
+                self.writePresence()
+            }
+        }
+        let refresh = typing && Date().timeIntervalSince(lastPresenceWrite) > 4
+        guard typing != myPresence.typing || refresh else { return }
+        myPresence.typing = typing
+        writePresence()
+    }
+
+    /// The newest message on the server: what "read up to" points at.
+    private var latestReadable: String? { server.last(where: { !$0.pending })?.id }
+
+    private func markReadIfViewing() {
+        guard viewing, let latest = latestReadable, latest != myPresence.read else { return }
+        myPresence.read = latest
+        writePresence()
+    }
+
+    private func writePresence() {
+        guard let data = try? JSONEncoder().encode(myPresence),
+              let sealed = try? session.seal(data, aad: session.presenceAAD(of: myID)) else { return }
+        lastPresenceWrite = Date()
+        let backend = self.backend, pairID = pair.id
+        Task { try? await backend.setPresence(sealed, pairID: pairID) }
+    }
+
+    private func receivePresence(_ sealed: Data?, at: Date?) {
+        guard let sealed, let partnerID,
+              let data = try? session.open(sealed, aad: session.presenceAAD(of: partnerID)),
+              let presence = try? JSONDecoder().decode(SealedPresence.self, from: data) else { return }
+        // Server time guards against a stale document (e.g. the app was killed mid-typing).
+        let age = at.map { Date().timeIntervalSince($0) } ?? 0
+        partnerTyping = presence.typing && age < 30
+        partnerHere = presence.here && age < 120
+        partnerTypingExpiry?.cancel()
+        if partnerTyping {
+            partnerTypingExpiry = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(7))
+                if !Task.isCancelled { self?.partnerTyping = false }
+            }
+        }
+        partnerHereExpiry?.cancel()
+        if partnerHere {
+            partnerHereExpiry = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(120))
+                if !Task.isCancelled { self?.partnerHere = false }
+            }
+        }
+        if partnerRead != presence.read {
+            partnerRead = presence.read
+            rebuild()
+        }
+    }
 
     // MARK: Sending
 
@@ -370,7 +477,10 @@ final class WatchlinkStore {
     private func receive(_ incoming: [BackendMessage]) {
         if !firstSnapshot {
             for message in incoming where !seen.contains(message.id) && message.senderID != myID {
-                if let payload = open(message), payload.kind == "heartbeat", let bpm = payload.bpm { incomingHeartbeat = bpm }
+                let payload = open(message)
+                if let payload, payload.kind == "heartbeat", let bpm = payload.bpm { incomingHeartbeat = bpm }
+                // Their message arrived: whatever they were typing is sent.
+                if payload?.kind != "reaction" { partnerTyping = false }
             }
         }
         firstSnapshot = false
@@ -379,6 +489,7 @@ final class WatchlinkStore {
         // The server copy now stands in for the local echo.
         for message in incoming { if let id = UUID(uuidString: message.id) { outbox[id] = nil } }
         rebuild()
+        markReadIfViewing()
     }
 
     private func rebuild() {
@@ -433,6 +544,11 @@ final class WatchlinkStore {
                 all[index].quote = byID[replyTo].map { LocalMessage.Quote(mine: $0.isMine, snippet: $0.snippet) }
                     ?? LocalMessage.Quote(mine: false, snippet: "Eski bir mesaj")
             }
+        }
+        // "Seen": the newest of my sent messages at or before what the partner has read.
+        if let read = partnerRead, let readAt = server.first(where: { $0.id == read })?.createdAt,
+           let index = all.lastIndex(where: { $0.isMine && $0.delivery == .sent && $0.timestamp <= readAt }) {
+            all[index].seen = true
         }
         messages = all
     }

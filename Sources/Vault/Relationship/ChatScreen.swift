@@ -203,6 +203,8 @@ struct ChatScreen: View {
 
     @ViewBuilder private var transcript: some View {
         let runs = MessageRun.group(store.messages)
+        let newestMessageID = store.messages.last?.id
+        let animation = RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -220,7 +222,10 @@ struct ChatScreen: View {
                         TypingBubble()
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 12)
-                            .wlTransition(.opacity.combined(with: .scale(scale: 0.8, anchor: .bottomLeading)), reduceMotion: reduceMotion)
+                            .wlTransition(.asymmetric(
+                                insertion: .opacity.combined(with: .scale(scale: 0.8, anchor: .bottomLeading)),
+                                removal: .opacity
+                            ), reduceMotion: reduceMotion)
                     }
                     // The true end of the conversation: what "scroll to the newest" aims at.
                     // Visible (or about to be) means the reader is at the bottom.
@@ -243,11 +248,13 @@ struct ChatScreen: View {
                     replyTarget = message
                     composing = true
                 }))
-            // Incoming messages settle on the same spring; sends are already inside withAnimation.
-            .animation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion), value: store.messages.count)
+            // Animate either arrival order: presence can end before the message snapshot.
+            .animation(animation, value: store.partnerTyping)
+            .animation(animation, value: store.messages.count)
+            .animation(animation, value: newestMessageID)
             // Follow the newest message: always for our own sends, and for the partner's
             // only when already at the bottom (reading older messages is never interrupted).
-            .onChange(of: store.messages.last?.id) { _, _ in
+            .onChange(of: newestMessageID) { _, _ in
                 guard let last = store.messages.last, last.isMine || atBottom else { return }
                 scrollToBottom(proxy)
             }

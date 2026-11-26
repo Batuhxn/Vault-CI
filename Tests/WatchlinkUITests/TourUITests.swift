@@ -104,6 +104,14 @@ final class TourUITests: XCTestCase {
         _ = tapIfExists(app.tabBars.buttons["Biz"])
         sleep(2)
         shot(prefix, "us")
+        let openedMailDigest = tapIfExists(app.buttons["Mail Özeti"], timeout: 5)
+        XCTAssertTrue(openedMailDigest)
+        if openedMailDigest {
+            let preview = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Cuma 14.00")).firstMatch
+            XCTAssertTrue(preview.waitForExistence(timeout: 5))
+            shot(prefix, "mail-digest")
+            XCTAssertTrue(tapIfExists(app.buttons["Bitti"]))
+        }
         app.swipeUp()
         shot(prefix, "us-2")
         app.swipeUp()

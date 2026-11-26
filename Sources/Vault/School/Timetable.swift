@@ -294,7 +294,7 @@ final class Timetable {
         return dayEnd - cursor >= 60 ? (cursor, nil) : nil
     }
 
-    static func key(day: Date, code: String, start: Int) -> String {
+    nonisolated static func key(day: Date, code: String, start: Int) -> String {
         let parts = Calendar.current.dateComponents([.year, .month, .day], from: day)
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0) + "|\(code)|\(start)"
     }

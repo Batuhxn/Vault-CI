@@ -132,6 +132,11 @@ struct TimetableSheet: View {
             if let problem {
                 Text(problem).font(.footnote).foregroundStyle(Room.noticeInk)
             }
+            #if DEBUG
+            if DemoMode.isOn {
+                Text("parse: \(TimetablePDF.diagnostics)").font(.caption.monospaced()).foregroundStyle(Room.ink3)
+            }
+            #endif
         } footer: {
             Text("PDF bu telefonda okunur; adın ve kimlik numaran okunmaz, dosya hiçbir yere gönderilmez.")
         }

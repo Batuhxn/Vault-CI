@@ -20,6 +20,8 @@ enum TimetablePDF {
         let maxX: CGFloat
         let top: CGFloat
         let bottom: CGFloat
+        /// The page text had a space or line break right before this character.
+        var breakBefore = false
         var height: CGFloat { bottom - top }
         var midY: CGFloat { (top + bottom) / 2 }
     }
@@ -55,13 +57,26 @@ enum TimetablePDF {
         let height = page.bounds(for: .mediaBox).maxY
         var result: [Glyph] = []
         result.reserveCapacity(text.length)
+        var pendingBreak = false
         for index in 0..<text.length {
             let character = text.substring(with: NSRange(location: index, length: 1))
-            if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+            if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                pendingBreak = true
+                continue
+            }
             let box = page.characterBounds(at: index)
-            if box.isNull || box.isEmpty || box.width <= 0 || box.height <= 0 { continue }
+            if box.isNull || box.isEmpty || box.width <= 0 || box.height <= 0 {
+                // A combining mark (the dot of İ) belongs to the previous letter.
+                if !result.isEmpty, character.unicodeScalars.allSatisfy({ $0.properties.isGraphemeExtend }) {
+                    let last = result.removeLast()
+                    result.append(Glyph(text: last.text + character, minX: last.minX, maxX: last.maxX,
+                                        top: last.top, bottom: last.bottom, breakBefore: last.breakBefore))
+                }
+                continue
+            }
             result.append(Glyph(text: character, minX: box.minX, maxX: box.maxX,
-                                top: height - box.maxY, bottom: height - box.minY))
+                                top: height - box.maxY, bottom: height - box.minY, breakBefore: pendingBreak))
+            pendingBreak = false
         }
         return result
     }
@@ -70,18 +85,20 @@ enum TimetablePDF {
 
     static func parse(glyphs: [Glyph]) -> [Course]? {
         let full = lines(glyphs)
-        guard let header = full.first(where: { line in line.words.filter { dayNames.contains($0.text) }.count >= 5 }) else {
+        let days = dayNames.map(fold)
+        guard let header = full.first(where: { line in line.words.filter { days.contains(fold($0.text)) }.count >= 5 }) else {
+            diagnostics = "no day header in \(full.count) lines; first: \(full.prefix(3).map(\.text))"
             return nil
         }
         var centres: [(day: Int, x: CGFloat)] = []
         for word in header.words {
-            if let day = dayNames.firstIndex(of: word.text), !centres.contains(where: { $0.day == day }) {
+            if let day = days.firstIndex(of: fold(word.text)), !centres.contains(where: { $0.day == day }) {
                 centres.append((day, (word.minX + word.maxX) / 2))
             }
         }
         centres.sort { $0.x < $1.x }
         let headerBottom = header.top + 1
-        let stop = full.first { $0.top > headerBottom && ($0.text.contains("DERS KODU") || $0.text.hasPrefix("DANIŞMAN")) }?.top
+        let stop = full.first { $0.top > headerBottom && (fold($0.text).contains("DERS KODU") || fold($0.text).hasPrefix("DANISMAN")) }?.top
             ?? .greatestFiniteMagnitude
 
         let grid = glyphs.filter { $0.top > headerBottom + 2 && $0.bottom < stop - 1 }
@@ -130,7 +147,7 @@ enum TimetablePDF {
         var names: [(code: String, name: String)] = []
         var inList = false
         for line in full {
-            if line.text.contains("DERS KODU") { inList = true; continue }
+            if fold(line.text).contains("DERS KODU") { inList = true; continue }
             guard inList, let row = courseRow(line.text) else { continue }
             if !names.contains(where: { $0.code == row.code }) { names.append(row) }
         }
@@ -142,7 +159,19 @@ enum TimetablePDF {
         for (code, list) in sessions where !courses.contains(where: { $0.code == code }) {
             courses.append(Course(code: code, name: "", sessions: list.sorted { ($0.dayOrder, $0.start) < ($1.dayOrder, $1.start) }))
         }
+        diagnostics = "columns \(columns.count), days \(centres.count), courses \(courses.count), slots \(sessions.values.map(\.count).reduce(0, +))"
         return courses.contains(where: { !$0.sessions.isEmpty }) ? courses : nil
+    }
+
+    /// What the last parse saw (shown in demo mode when it fails).
+    nonisolated(unsafe) static var diagnostics = ""
+
+    /// "PERŞEMBE" and "PERŞEMBE" (decomposed) and "PERSEMBE" compare equal.
+    static func fold(_ text: String) -> String {
+        text.precomposedStringWithCanonicalMapping
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .replacingOccurrences(of: "ı", with: "i")
+            .uppercased(with: Locale(identifier: "en_US_POSIX"))
     }
 
     private static func lines(_ glyphs: [Glyph]) -> [Line] {
@@ -159,7 +188,7 @@ enum TimetablePDF {
             var text = ""
             var words: [Word] = []
             for (index, glyph) in sorted.enumerated() {
-                if index > 0, glyph.minX - sorted[index - 1].maxX > glyph.height * 0.2 {
+                if index > 0, glyph.breakBefore || glyph.minX - sorted[index - 1].maxX > glyph.height * 0.2 {
                     text += " "
                     words.append(Word(text: glyph.text, minX: glyph.minX, maxX: glyph.maxX))
                 } else if words.isEmpty {

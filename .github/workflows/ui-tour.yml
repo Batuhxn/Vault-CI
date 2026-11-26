@@ -138,7 +138,8 @@ jobs:
                   for a in test.get("attachments", []):
                       src = os.path.join(root, a["exportedFileName"])
                       name = a.get("suggestedHumanReadableName") or a["exportedFileName"]
-                      name = name.split("_0_")[0].replace("/", "-")
+                      name = name.split("_0_")[0]
+                      name = "".join("-" if ch in '/\\"\':<>|*?\r\n' else ch for ch in name)
                       if not name.endswith(".png"):
                           name += ".png"
                       if os.path.exists(src):

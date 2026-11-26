@@ -19,7 +19,7 @@ struct MailDigest: Decodable {
 struct MailDigestClient {
     private static let relay = URL(string: "https://watchlink-mail.watchlink-relay.workers.dev/v1")!
     /// The Apps Script web app (one project, everyone connects with their own MEF account).
-    static let connectPageURL: URL? = nil
+    static let connectPageURL = URL(string: "https://script.google.com/a/macros/mef.edu.tr/s/AKfycbzaR3MQHJW68mIqaRkEuYOOBXrLucciqLXwNOxsPqa7RCtA8kE7fOimX_Xm1wxsVzgS9g/exec")
 
     /// The page that stores a fresh ingest code for whoever opens it. The code can only write a digest.
     static func connectPage(token: String) -> URL? {

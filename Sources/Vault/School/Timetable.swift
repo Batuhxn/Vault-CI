@@ -101,6 +101,8 @@ final class Timetable {
         /// First day attendance is tracked (the import day).
         var since: Date?
         var reminders = true
+        /// Minutes before class (optional so older saved files still load).
+        var lead: Int?
     }
 
     private var stored: Stored
@@ -118,7 +120,7 @@ final class Timetable {
 
     static let reminderPrefix = "wl.class."
     static let category = "wl.class"
-    static let leadMinutes = 10
+    static let leadChoices = [5, 10, 15, 30, 45, 60]
 
     private init() {
         stored = Self.load() ?? Stored()
@@ -200,6 +202,19 @@ final class Timetable {
     func setNoAttendance(_ value: Bool, for code: String) {
         stored.settings[code, default: CourseSettings()].noAttendance = value
         changed()
+    }
+
+    /// How long before class the reminder comes.
+    var leadMinutes: Int {
+        get { stored.lead ?? 10 }
+        set {
+            stored.lead = newValue
+            changed()
+        }
+    }
+
+    static func leadText(_ minutes: Int) -> String {
+        minutes % 60 == 0 ? "\(minutes / 60) saat" : "\(minutes) dakika"
     }
 
     var remindersOn: Bool {
@@ -323,9 +338,10 @@ final class Timetable {
         let center = UNUserNotificationCenter.current()
         let courses = stored.reminders ? stored.courses.filter { !settings(for: $0.code).noAttendance } : []
         let marks = stored.marks
+        let lead = leadMinutes
         let now = Date()
         let upcoming = Self.occurrences(of: courses, from: now, to: now.addingTimeInterval(14 * 86_400))
-            .filter { $0.start.addingTimeInterval(TimeInterval(-Self.leadMinutes * 60)) > now && marks[$0.key] == nil }
+            .filter { $0.start.addingTimeInterval(TimeInterval(-lead * 60)) > now && marks[$0.key] == nil }
             .prefix(40)
         Task {
             let old = await center.pendingNotificationRequests().map(\.identifier).filter { $0.hasPrefix(Self.reminderPrefix) }
@@ -334,12 +350,12 @@ final class Timetable {
                 let content = UNMutableNotificationContent()
                 content.title = "\(occurrence.course.code) · \(ClassSession.clock(occurrence.session.start))"
                 let room = occurrence.session.room
-                content.body = (room.isEmpty ? "" : "\(room) · ") + "\(Self.leadMinutes) dakika sonra başlıyor"
+                content.body = (room.isEmpty ? "" : "\(room) · ") + "\(Self.leadText(lead)) sonra başlıyor"
                 content.sound = .default
                 content.categoryIdentifier = Self.category
                 content.threadIdentifier = Self.category
                 content.userInfo = ["key": occurrence.key]
-                let fire = occurrence.start.addingTimeInterval(TimeInterval(-Self.leadMinutes * 60))
+                let fire = occurrence.start.addingTimeInterval(TimeInterval(-lead * 60))
                 let when = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
                 let request = UNNotificationRequest(identifier: Self.reminderPrefix + occurrence.key, content: content,
                                                     trigger: UNCalendarNotificationTrigger(dateMatching: when, repeats: false))
@@ -370,7 +386,7 @@ final class Timetable {
     func useDemo(courses: [Course], since: Date, limits: [String: Int], marks: [String: AttendanceMark]) {
         ephemeral = true
         stored = Stored(courses: courses, settings: limits.mapValues { CourseSettings(limit: $0) },
-                        marks: marks, since: since, reminders: true)
+                        marks: marks, since: since, reminders: true, lead: 10)
     }
     #endif
 }

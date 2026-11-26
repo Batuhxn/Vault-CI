@@ -186,7 +186,14 @@ struct TimetableSheet: View {
         }
         WeekList(courses: timetable.courses)
         Section {
-            Toggle("Dersten 10 dk önce sor", isOn: Binding(get: { timetable.remindersOn }, set: { timetable.remindersOn = $0 }))
+            Toggle("Dersten önce sor", isOn: Binding(get: { timetable.remindersOn }, set: { timetable.remindersOn = $0 }))
+            if timetable.remindersOn {
+                Picker("Ne zaman", selection: Binding(get: { timetable.leadMinutes }, set: { timetable.leadMinutes = $0 })) {
+                    ForEach(Timetable.leadChoices, id: \.self) { minutes in
+                        Text("\(Timetable.leadText(minutes)) önce").tag(minutes)
+                    }
+                }
+            }
         } footer: {
             Text("Bildirimde Gidiyorum, Gitmiyorum, Ders iptal ve Muafım seçenekleri olur. Cevaplamadığın dersler işaretsiz kalır.")
         }

@@ -36,6 +36,9 @@ enum TimetablePDF {
         let text: String
         let top: CGFloat
         let words: [Word]
+        /// Baseline (top-left origin).
+        var base: CGFloat { top + unitHeight }
+        let unitHeight: CGFloat
     }
 
     static let dayNames = ["PAZARTESİ", "SALI", "ÇARŞAMBA", "PERŞEMBE", "CUMA", "CUMARTESİ", "PAZAR"]
@@ -52,65 +55,40 @@ enum TimetablePDF {
 
     /// Characters with their boxes, top-left origin.
     ///
-    /// PDFKit's per-character boxes are tight around the ink (a colon is tiny,
-    /// "a" sits lower than "M"), which scatters one visual line across many
-    /// heights. So the vertical position comes from PDFKit's own line
-    /// segmentation (`selectionsByLine`) and only the horizontal position from
-    /// the character box.
+    /// Each character is read as a one-character selection, so its text and its
+    /// box always belong together (`page.string` indices can drift from the
+    /// character-box indices when letters like "İ" are stored decomposed).
     static func glyphs(of page: PDFPage) -> [Glyph] {
-        guard let string = page.string else { return [] }
-        let text = string as NSString
         let height = page.bounds(for: .mediaBox).maxY
         var result: [Glyph] = []
-        result.reserveCapacity(text.length)
-        let lines = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
-        for line in lines {
-            let box = line.bounds(for: page)
-            guard !box.isNull, !box.isEmpty else { continue }
-            let top = height - box.maxY, bottom = height - box.minY
-            var pendingBreak = true
-            for part in 0..<line.numberOfTextRanges(on: page) {
-                let range = line.range(at: part, on: page)
-                guard range.location != NSNotFound, range.location + range.length <= text.length else { continue }
-                for index in range.location..<(range.location + range.length) {
-                    append(index: index, text: text, page: page, top: top, bottom: bottom,
-                           pendingBreak: &pendingBreak, into: &result)
+        result.reserveCapacity(page.numberOfCharacters)
+        var pendingBreak = false
+        for index in 0..<page.numberOfCharacters {
+            guard let selection = page.selection(for: NSRange(location: index, length: 1)),
+                  let character = selection.string, !character.isEmpty else {
+                pendingBreak = true
+                continue
+            }
+            if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                pendingBreak = true
+                continue
+            }
+            var box = selection.bounds(for: page)
+            if box.isNull || box.isEmpty { box = page.characterBounds(at: index) }
+            if box.isNull || box.isEmpty || box.width <= 0 || box.height <= 0 {
+                // A combining mark (the dot of İ) belongs to the previous letter.
+                if !result.isEmpty, character.unicodeScalars.allSatisfy({ $0.properties.isGraphemeExtend }) {
+                    let last = result.removeLast()
+                    result.append(Glyph(text: last.text + character, minX: last.minX, maxX: last.maxX,
+                                        top: last.top, bottom: last.bottom, breakBefore: last.breakBefore))
                 }
+                continue
             }
-        }
-        if result.isEmpty {
-            // No line information: fall back to the character boxes alone.
-            var pendingBreak = false
-            for index in 0..<text.length {
-                let box = page.characterBounds(at: index)
-                append(index: index, text: text, page: page, top: height - box.maxY, bottom: height - box.minY,
-                       pendingBreak: &pendingBreak, into: &result)
-            }
+            result.append(Glyph(text: character, minX: box.minX, maxX: box.maxX,
+                                top: height - box.maxY, bottom: height - box.minY, breakBefore: pendingBreak))
+            pendingBreak = false
         }
         return result
-    }
-
-    private static func append(index: Int, text: NSString, page: PDFPage, top: CGFloat, bottom: CGFloat,
-                               pendingBreak: inout Bool, into result: inout [Glyph]) {
-        let character = text.substring(with: NSRange(location: index, length: 1))
-        if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            pendingBreak = true
-            return
-        }
-        let box = page.characterBounds(at: index)
-        if box.isNull || box.isEmpty || box.width <= 0 {
-            // A combining mark (the dot of İ) belongs to the previous letter.
-            if !result.isEmpty, character.unicodeScalars.allSatisfy({ $0.properties.isGraphemeExtend }) {
-                let last = result.removeLast()
-                result.append(Glyph(text: last.text + character, minX: last.minX, maxX: last.maxX,
-                                    top: last.top, bottom: last.bottom, breakBefore: last.breakBefore))
-            }
-            return
-        }
-        guard bottom > top else { return }
-        result.append(Glyph(text: character, minX: box.minX, maxX: box.maxX, top: top, bottom: bottom,
-                            breakBefore: pendingBreak))
-        pendingBreak = false
     }
 
     // MARK: Parsing (pure; works on any glyph list)
@@ -133,11 +111,9 @@ enum TimetablePDF {
             }
         }
         centres.sort { $0.x < $1.x }
-        let headerBottom = header.top + 1
-        let stop = full.first { $0.top > headerBottom && (fold($0.text).contains("DERS KODU") || fold($0.text).hasPrefix("DANISMAN")) }?.top
-            ?? .greatestFiniteMagnitude
-
-        let grid = glyphs.filter { $0.top > headerBottom + 2 && $0.bottom < stop - 1 }
+        let stopLine = full.first { $0.base > header.base + unit && (fold($0.text).contains("DERS KODU") || fold($0.text).hasPrefix("DANISMAN")) }
+        let stop = stopLine?.base ?? .greatestFiniteMagnitude
+        let grid = glyphs.filter { $0.bottom > header.base + unit * 0.5 && $0.bottom < stop - unit * 0.5 }
         let gridLines = lines(grid, unit: unit, gap: gap)
 
         // Column left edges: where course codes start.
@@ -199,7 +175,7 @@ enum TimetablePDF {
         diagnostics = "glyphs \(glyphs.count) h~\(Int(unit * 10)) cols \(columns.map { Int($0) }) days \(centres.map { Int($0.x) }) "
             + "courses \(courses.count) slots \(sessions.values.map(\.count).reduce(0, +)) stop \(stop < 1e9 ? Int(stop) : -1) "
             + "grid: " + gridLines.prefix(14).map(\.text).joined(separator: " ¦ ")
-            + " list: " + full.filter { $0.top >= stop }.prefix(3).map(\.text).joined(separator: " ¦ ")
+            + " list: " + full.filter { $0.base >= stop }.prefix(3).map(\.text).joined(separator: " ¦ ")
         #endif
         return courses.contains(where: { !$0.sessions.isEmpty }) ? courses : nil
     }
@@ -215,25 +191,41 @@ enum TimetablePDF {
             .uppercased(with: Locale(identifier: "en_US_POSIX"))
     }
 
-    /// Groups glyphs into visual lines. PDFKit reports tight ink boxes (a colon
-    /// is tiny, "a" sits lower than "M"), so lines are matched against a running
-    /// centre with a tolerance from the page's typical glyph height, and words
-    /// break where the page text had a space or the gap is clearly wider than
-    /// letter spacing.
+    /// Groups glyphs into visual lines by baseline. Character boxes may be tight
+    /// around the ink, so letters that sit on the baseline set the lines, and
+    /// descenders ("y", "ş", ",") and floating marks ("-") join the nearest one.
+    private static let descending: Set<String> = ["g", "j", "p", "q", "y", "ç", "ş", "ğ", "Ç", "Ş", "Q", "J",
+                                                  ",", ";", "(", ")", "[", "]", "/", "|"]
+    private static let floating: Set<String> = ["-", "–", "—", "=", "'", "’", "‘", "\"", "“", "”", "*", "^", "~"]
+
     private static func lines(_ glyphs: [Glyph], unit: CGFloat, gap: CGFloat) -> [Line] {
-        let tolerance = max(unit * 0.6, 1.5)
-        var rows: [(mid: CGFloat, count: CGFloat, glyphs: [Glyph])] = []
-        for glyph in glyphs.sorted(by: { $0.midY < $1.midY }) {
-            if let last = rows.indices.last, abs(rows[last].mid - glyph.midY) < tolerance {
-                rows[last].mid = (rows[last].mid * rows[last].count + glyph.midY) / (rows[last].count + 1)
-                rows[last].count += 1
-                rows[last].glyphs.append(glyph)
+        let tolerance = max(unit * 0.35, 1.0)
+        var bases: [(base: CGFloat, count: CGFloat)] = []
+        for glyph in glyphs.filter({ !descending.contains($0.text) && !floating.contains($0.text) })
+            .sorted(by: { $0.bottom < $1.bottom }) {
+            if let last = bases.indices.last, glyph.bottom - bases[last].base < tolerance {
+                bases[last].base = (bases[last].base * bases[last].count + glyph.bottom) / (bases[last].count + 1)
+                bases[last].count += 1
             } else {
-                rows.append((glyph.midY, 1, [glyph]))
+                bases.append((glyph.bottom, 1))
             }
         }
-        return rows.map { row in
-            let sorted = row.glyphs.sorted { $0.minX < $1.minX }
+        guard !bases.isEmpty else { return [] }
+        var members = Array(repeating: [Glyph](), count: bases.count)
+        for glyph in glyphs {
+            let expected: CGFloat
+            if descending.contains(glyph.text) { expected = glyph.bottom - unit * 0.25 }
+            else if floating.contains(glyph.text) { expected = glyph.bottom + unit * 0.3 }
+            else { expected = glyph.bottom }
+            var best = 0
+            for index in bases.indices where abs(bases[index].base - expected) < abs(bases[best].base - expected) {
+                best = index
+            }
+            members[best].append(glyph)
+        }
+        return zip(bases, members).compactMap { base, row in
+            guard !row.isEmpty else { return nil }
+            let sorted = row.sorted { $0.minX < $1.minX }
             var text = ""
             var words: [Word] = []
             for (index, glyph) in sorted.enumerated() {
@@ -248,7 +240,7 @@ enum TimetablePDF {
                 }
                 text += glyph.text
             }
-            return Line(text: text, top: sorted.map(\.top).min() ?? 0, words: words)
+            return Line(text: text, top: base.base - unit, words: words, unitHeight: unit)
         }
     }
 

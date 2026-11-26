@@ -112,7 +112,7 @@ struct ChatScreen: View {
 
     /// Photo and heartbeat: two quiet round controls, the same family as the moon.
     private var attachments: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
             PhotosPicker(selection: $pickedPhoto, matching: .images) {
                 Image(systemName: "photo")
                     .font(.body)
@@ -139,6 +139,8 @@ struct ChatScreen: View {
         }
         .disabled(!store.canSend)
         .padding(.bottom, 4)
+        // Icons in fixed round frames: let them grow a little, never past the frame.
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 
     private func back() {
@@ -180,10 +182,16 @@ struct ChatScreen: View {
         .padding(.top, 8)
         .padding(.bottom, 14)
         .background {
-            LinearGradient(stops: [.init(color: Room.cream, location: 0.78), .init(color: Room.cream.opacity(0), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
+            Room.cream.ignoresSafeArea(edges: .top)
         }
+        // Messages fade out just below the header instead of showing through it.
+        .background(alignment: .bottom) {
+            LinearGradient(colors: [Room.cream, Room.cream.opacity(0)], startPoint: .top, endPoint: .bottom)
+                .frame(height: 18)
+                .offset(y: 18)
+                .allowsHitTesting(false)
+        }
+        .dynamicTypeSize(...DynamicTypeSize.accessibility1)
     }
 
     @ViewBuilder private var transcript: some View {
@@ -254,6 +262,11 @@ struct ChatScreen: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(40))
             withAnimation(reduceMotion ? nil : .smooth(duration: 0.38)) {
+                proxy.scrollTo(Self.bottomID, anchor: .bottom)
+            }
+            // The keyboard and composer may still be settling: land on the true bottom.
+            try? await Task.sleep(for: .milliseconds(420))
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.25)) {
                 proxy.scrollTo(Self.bottomID, anchor: .bottom)
             }
         }
@@ -378,6 +391,7 @@ struct ChatScreen: View {
                 if recorder.isRecording { finishRecording(send: true) } else { beginRecording() }
             }
             .padding(.bottom, 4)
+            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 
     private func beginRecording() {

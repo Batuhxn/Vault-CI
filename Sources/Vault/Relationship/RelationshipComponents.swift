@@ -18,6 +18,15 @@ struct ScreenScaffold<Content: View>: View {
             content
                 .frame(maxWidth: 560, maxHeight: .infinity, alignment: .top)
                 .frame(maxWidth: .infinity)
+            // Under the status bar: solid ground fading out just below it, so
+            // scrolled content slips away instead of running into the clock.
+            LinearGradient(stops: [.init(color: ground, location: 0), .init(color: ground, location: 0.55),
+                                   .init(color: ground.opacity(0), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 14)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
     }
 }

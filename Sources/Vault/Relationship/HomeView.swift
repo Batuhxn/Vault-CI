@@ -40,29 +40,46 @@ struct HomeView: View {
         TimelineView(.everyMinute) { context in
             let cards = displayedCards(now: context.date)
             ScreenScaffold {
-                VStack(alignment: .leading, spacing: 12) {
-                    HeadlineBlock(meta: context.date.formatted(.dateTime.weekday(.wide).day().month(.wide)),
-                                  headline: Self.headline(at: context.date, name: relationship.snapshot.profile.me.name))
-                        .padding(.bottom, 16)
-                    AgendaCard(agenda: store.agenda,
-                               partnerName: store.partnerName.isEmpty ? relationship.snapshot.profile.partner.displayName : store.partnerName)
-                        .padding(.horizontal, 14)
-                    ForEach(cards, id: \.card) { item in
-                        WaitingCard(content: item.content, confirmed: item.confirmed) { resolve(item.card) }
-                            .padding(.horizontal, 14)
-                            .zIndex(0)
-                            .wlTransition(.tuck, reduceMotion: reduceMotion)
+                // The room fits on one screen when it can. When it can't (a small
+                // phone, large text, a busy week) it scrolls instead of spilling
+                // under the clock and the tab bar.
+                ViewThatFits(in: .vertical) {
+                    room(now: context.date, cards: cards, scrolling: false)
+                    ScrollView {
+                        room(now: context.date, cards: cards, scrolling: true)
                     }
-                    ConversationSurface(store: store, partner: relationship.snapshot.profile.partner,
-                                        presence: store.partnerHere ? .together : PartnerPresence.current(for: relationship),
-                                        open: open)
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onSurfaceFrame($0) }
-                        // The surface sits above the cards so a resolved card slips behind it.
-                        .zIndex(1)
+                    .scrollBounceBehavior(.basedOnSize)
                 }
                 .animation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion), value: cards.map(\.card))
             }
         }
+    }
+
+    private func room(now: Date, cards: [DisplayedCard], scrolling: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HeadlineBlock(meta: now.formatted(.dateTime.weekday(.wide).day().month(.wide)),
+                          headline: Self.headline(at: now, name: relationship.snapshot.profile.me.name))
+                .padding(.bottom, 16)
+            AgendaCard(agenda: store.agenda, partnerName: partnerName)
+                .padding(.horizontal, 14)
+            ForEach(cards, id: \.card) { item in
+                WaitingCard(content: item.content, confirmed: item.confirmed) { resolve(item.card) }
+                    .padding(.horizontal, 14)
+                    .zIndex(0)
+                    .wlTransition(.tuck, reduceMotion: reduceMotion)
+            }
+            ConversationSurface(store: store, partner: relationship.snapshot.profile.partner, partnerName: partnerName,
+                                presence: store.partnerHere ? .together : PartnerPresence.current(for: relationship),
+                                open: open)
+                .frame(minHeight: scrolling ? 340 : nil)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onSurfaceFrame($0) }
+                // The surface sits above the cards so a resolved card slips behind it.
+                .zIndex(1)
+        }
+    }
+
+    private var partnerName: String {
+        store.partnerName.isEmpty ? relationship.snapshot.profile.partner.displayName : store.partnerName
     }
 
     private struct DisplayedCard {
@@ -102,6 +119,7 @@ struct HomeView: View {
 private struct ConversationSurface: View {
     let store: WatchlinkStore
     let partner: Person
+    let partnerName: String
     let presence: PartnerPresence
     let open: (Bool) -> Void
 
@@ -134,6 +152,7 @@ private struct ConversationSurface: View {
                             }
                         }
                         .allowsHitTesting(false)
+                        .environment(\.bubbleContext, BubbleContext(partnerName: partnerName))
                     }
                     Color.clear.frame(height: 56)  // room for the pill
                 }

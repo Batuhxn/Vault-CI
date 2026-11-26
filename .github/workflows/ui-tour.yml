@@ -17,7 +17,13 @@ permissions:
 jobs:
   tour:
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 60
+    # One phone per job: after a long UI test the simulator service on the
+    # runner can drop its devices, so each size gets a fresh machine.
+    strategy:
+      fail-fast: false
+      matrix:
+        size: [small, large]
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -44,6 +50,7 @@ jobs:
       - name: Pick simulators (a small and a large iPhone)
         env:
           REQUESTED: ${{ inputs.devices }}
+          SIZE: ${{ matrix.size }}
         run: |
           set -euo pipefail
           xcodebuild -showdestinations -project Vault.xcodeproj -scheme Vault-App > "$RUNNER_TEMP/dest.txt" 2>/dev/null || true
@@ -68,7 +75,7 @@ jobs:
           else:
               small = find(["iPhone 16e", "iPhone SE (3rd generation)", "iPhone 17", "iPhone 16"]) or (current[0] if current else None)
               large = find(["iPhone 17 Pro Max", "iPhone 16 Pro Max", "iPhone Air"]) or (current[-1] if current else None)
-              picked = [s for s in (small, large) if s]
+              picked = [s for s in ((small,) if os.environ["SIZE"] == "small" else (large,)) if s]
           print("TOUR_DEVICES=" + "|".join(f"{s[2]}={s[0]} ({s[1]})" for s in dict.fromkeys(picked)))
           PY
           grep TOUR_DEVICES "$GITHUB_ENV"
@@ -94,6 +101,8 @@ jobs:
             slug="$(echo "$label" | tr -cs 'A-Za-z0-9' '-' | sed 's/-*$//')"
             bundle="$RUNNER_TEMP/tour-$slug.xcresult"
             xcrun simctl boot "$device" 2>/dev/null || true
+            # The tour records a voice message: answer the microphone prompt up front.
+            xcrun simctl privacy "$device" grant microphone com.batuhxn.watchlink 2>/dev/null || true
             xcrun simctl status_bar "$device" override --time "9:41" --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 2>/dev/null || true
             xcodebuild test-without-building -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
               -destination "id=$device" \
@@ -126,6 +135,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: ui-tour-screenshots
+          name: ui-tour-${{ matrix.size }}
           path: ${{ runner.temp }}/shots
           retention-days: 7

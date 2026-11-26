@@ -34,6 +34,14 @@ final class TourUITests: XCTestCase {
         shot(prefix, "home-scrolled")
         app.swipeDown()
 
+        // The whole week
+        if tapIfExists(app.buttons.containing(NSPredicate(format: "label BEGINSWITH %@", "Tüm hafta")).firstMatch) {
+            sleep(1)
+            shot(prefix, "agenda-week")
+            _ = tapIfExists(app.buttons["Bitti"])
+            sleep(1)
+        }
+
         // Agenda settings sheet
         if tapIfExists(app.buttons["Takvim paylaşımı"]) {
             sleep(1)

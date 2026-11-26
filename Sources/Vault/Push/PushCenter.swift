@@ -55,7 +55,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// While Watchlink is open the message is already on screen (and a heartbeat
     /// plays as haptics), so no banner on top of it.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
-        -> UNNotificationPresentationOptions { [] }
+        -> UNNotificationPresentationOptions {
+        // Exam reminders are local and worth seeing even with the app open.
+        notification.request.identifier.hasPrefix("wl.agenda.") ? [.banner, .sound, .list] : []
+    }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {}
 }

@@ -44,6 +44,9 @@ struct HomeView: View {
                     HeadlineBlock(meta: context.date.formatted(.dateTime.weekday(.wide).day().month(.wide)),
                                   headline: Self.headline(at: context.date, name: relationship.snapshot.profile.me.name))
                         .padding(.bottom, 16)
+                    AgendaCard(agenda: store.agenda,
+                               partnerName: store.partnerName.isEmpty ? relationship.snapshot.profile.partner.displayName : store.partnerName)
+                        .padding(.horizontal, 14)
                     ForEach(cards, id: \.card) { item in
                         WaitingCard(content: item.content, confirmed: item.confirmed) { resolve(item.card) }
                             .padding(.horizontal, 14)
@@ -51,7 +54,8 @@ struct HomeView: View {
                             .wlTransition(.tuck, reduceMotion: reduceMotion)
                     }
                     ConversationSurface(store: store, partner: relationship.snapshot.profile.partner,
-                                        presence: PartnerPresence.current(for: relationship), open: open)
+                                        presence: store.partnerHere ? .together : PartnerPresence.current(for: relationship),
+                                        open: open)
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onSurfaceFrame($0) }
                         // The surface sits above the cards so a resolved card slips behind it.
                         .zIndex(1)

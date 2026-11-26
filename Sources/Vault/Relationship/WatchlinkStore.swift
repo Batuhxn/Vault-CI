@@ -138,6 +138,9 @@ final class WatchlinkStore {
     var myBPM: Int { profile(of: myID).bpm ?? 72 }
     var partnerBPM: Int { partnerID.flatMap { profile(of: $0).bpm } ?? 72 }
 
+    /// Both calendars' next two weeks (opt-in, sealed).
+    let agenda: SharedAgenda
+
     @ObservationIgnored private let backend: any ChatBackend
     @ObservationIgnored private let session: PairCrypto.Session
     @ObservationIgnored private var listener: (any ListenerToken)?
@@ -168,7 +171,10 @@ final class WatchlinkStore {
         self.pair = pair
         self.myID = myID
         self.session = session
+        agenda = SharedAgenda(backend: backend, pairID: pair.id, myID: myID,
+                              partnerID: pair.memberIDs.first { $0 != myID }, session: session)
         shareKeyWithExtension()
+        agenda.partnerName = { [weak self] in self?.partnerName ?? "" }
     }
 
     func start() {
@@ -182,6 +188,7 @@ final class WatchlinkStore {
         }
         monitor.start(queue: DispatchQueue(label: "watchlink.path"))
         self.monitor = monitor
+        agenda.start()
         if let partnerID {
             presenceListener = backend.observePresence(pairID: pair.id, member: partnerID) { [weak self] sealed, at in
                 Task { @MainActor in self?.receivePresence(sealed, at: at) }
@@ -192,6 +199,7 @@ final class WatchlinkStore {
     func stop() {
         listener?.cancel(); listener = nil
         presenceListener?.cancel(); presenceListener = nil
+        agenda.stop()
         for task in [typingIdle, hereBeat, partnerTypingExpiry, partnerHereExpiry] { task?.cancel() }
         monitor?.cancel(); monitor = nil
     }

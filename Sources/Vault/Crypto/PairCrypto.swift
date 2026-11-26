@@ -108,6 +108,7 @@ enum PairCrypto {
         func voiceAAD(id: String, sender: String) -> String { "\(PairCrypto.version)|voice|\(pairID)|\(sender)|\(id)" }
         func profileAAD(of member: String) -> String { "\(PairCrypto.version)|profile|\(pairID)|\(member)" }
         func presenceAAD(of member: String) -> String { "\(PairCrypto.version)|presence|\(pairID)|\(member)" }
+        func agendaAAD(of member: String) -> String { "\(PairCrypto.version)|agenda|\(pairID)|\(member)" }
 
         /// The raw pair key, handed to the notification extension through the
         /// shared Keychain group (this device only) so it can open pushes.

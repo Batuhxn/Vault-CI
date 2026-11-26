@@ -69,6 +69,11 @@ protocol ChatBackend: AnyObject {
     // Profile (sealed name, rhythm, push address).
     func saveSealedProfile(_ sealed: Data, pairID: String) async throws
 
+    /// One sealed document per member in a pair sub-collection ("agenda", ...).
+    func setMemberDoc(_ sealed: Data, collection: String, pairID: String) async throws
+    func observeMemberDoc(collection: String, pairID: String, member: String,
+                          onChange: @escaping (Data?, Date?) -> Void) -> ListenerToken
+
     // Presence (sealed: typing, in the chat, read up to). One small document per member.
     func setPresence(_ sealed: Data, pairID: String) async throws
     /// The member's sealed presence and the server time it was written (nil while pending).

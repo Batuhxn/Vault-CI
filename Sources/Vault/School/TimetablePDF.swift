@@ -84,8 +84,16 @@ enum TimetablePDF {
                 }
                 continue
             }
+            let top = height - box.maxY, bottom = height - box.minY
+            if let last = result.last, last.text == character, abs(last.minX - box.minX) < 0.05,
+               abs(last.maxX - box.maxX) < 0.05, abs(last.bottom - bottom) < 0.05 {
+                // PDFKit counts an implied separator after a text run and its
+                // one-character selection snaps back to the run's last letter.
+                pendingBreak = true
+                continue
+            }
             result.append(Glyph(text: character, minX: box.minX, maxX: box.maxX,
-                                top: height - box.maxY, bottom: height - box.minY, breakBefore: pendingBreak))
+                                top: top, bottom: bottom, breakBefore: pendingBreak))
             pendingBreak = false
         }
         return result

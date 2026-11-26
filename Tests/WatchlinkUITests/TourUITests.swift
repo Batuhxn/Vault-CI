@@ -100,7 +100,11 @@ final class TourUITests: XCTestCase {
             sleep(1)
         }
 
-        // Us
+        // Us (first close a message menu a stray long press may have opened)
+        if app.buttons["Kopyala"].exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap()
+            sleep(1)
+        }
         _ = tapIfExists(app.tabBars.buttons["Biz"])
         sleep(2)
         shot(prefix, "us")
@@ -120,13 +124,6 @@ final class TourUITests: XCTestCase {
             shot(prefix, "timetable")
             app.swipeUp()
             shot(prefix, "timetable-week")
-            app.swipeDown()
-            app.swipeDown()
-            app.swipeUp()
-            app.swipeUp()
-            app.swipeUp()
-            shot(prefix, "timetable-diagnostics")
-            app.swipeDown()
             app.swipeDown()
             app.swipeDown()
             let course = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "EE 303")).firstMatch

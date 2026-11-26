@@ -84,7 +84,9 @@ enum TimetablePDF {
     // MARK: Parsing (pure; works on any glyph list)
 
     static func parse(glyphs: [Glyph]) -> [Course]? {
-        let full = lines(glyphs)
+        let heights = glyphs.map(\.height).sorted()
+        let unit = heights.isEmpty ? 6 : heights[heights.count / 2]
+        let full = lines(glyphs, unit: unit)
         let days = dayNames.map(fold)
         guard let header = full.first(where: { line in line.words.filter { days.contains(fold($0.text)) }.count >= 5 }) else {
             diagnostics = "no day header in \(full.count) lines; first: \(full.prefix(3).map(\.text))"
@@ -102,7 +104,7 @@ enum TimetablePDF {
             ?? .greatestFiniteMagnitude
 
         let grid = glyphs.filter { $0.top > headerBottom + 2 && $0.bottom < stop - 1 }
-        let gridLines = lines(grid)
+        let gridLines = lines(grid, unit: unit)
 
         // Column left edges: where course codes start.
         var lefts: [CGFloat] = []
@@ -126,7 +128,7 @@ enum TimetablePDF {
             let cell = grid.filter { $0.minX >= left - 2 && $0.minX < next - 2 }
             var code: String?
             var body: [String] = []
-            for line in lines(cell) {
+            for line in lines(cell, unit: unit) {
                 let text = line.text.trimmingCharacters(in: .whitespaces)
                 if isCode(text) {
                     code = normalizedCode(text)
@@ -160,9 +162,7 @@ enum TimetablePDF {
             courses.append(Course(code: code, name: "", sessions: list.sorted { ($0.dayOrder, $0.start) < ($1.dayOrder, $1.start) }))
         }
         #if DEBUG
-        let heights = glyphs.map(\.height).sorted()
-        let median = heights.isEmpty ? 0 : heights[heights.count / 2]
-        diagnostics = "glyphs \(glyphs.count) h~\(Int(median * 10)) cols \(columns.map { Int($0) }) days \(centres.map { Int($0.x) }) "
+        diagnostics = "glyphs \(glyphs.count) h~\(Int(unit * 10)) cols \(columns.map { Int($0) }) days \(centres.map { Int($0.x) }) "
             + "courses \(courses.count) slots \(sessions.values.map(\.count).reduce(0, +)) stop \(stop < 1e9 ? Int(stop) : -1) "
             + "grid: " + gridLines.prefix(14).map(\.text).joined(separator: " ¦ ")
             + " list: " + full.filter { $0.top >= stop }.prefix(3).map(\.text).joined(separator: " ¦ ")
@@ -181,13 +181,21 @@ enum TimetablePDF {
             .uppercased(with: Locale(identifier: "en_US_POSIX"))
     }
 
-    private static func lines(_ glyphs: [Glyph]) -> [Line] {
-        var rows: [(mid: CGFloat, glyphs: [Glyph])] = []
+    /// Groups glyphs into visual lines. PDFKit reports tight ink boxes (a colon
+    /// is tiny, "a" sits lower than "M"), so lines are matched against a running
+    /// centre with a tolerance from the page's typical glyph height, and words
+    /// break where the page text had a space or the gap is clearly wider than
+    /// letter spacing.
+    private static func lines(_ glyphs: [Glyph], unit: CGFloat) -> [Line] {
+        let tolerance = max(unit * 0.6, 1.5)
+        var rows: [(mid: CGFloat, count: CGFloat, glyphs: [Glyph])] = []
         for glyph in glyphs.sorted(by: { $0.midY < $1.midY }) {
-            if let last = rows.indices.last, abs(rows[last].mid - glyph.midY) < glyph.height * 0.5 {
+            if let last = rows.indices.last, abs(rows[last].mid - glyph.midY) < tolerance {
+                rows[last].mid = (rows[last].mid * rows[last].count + glyph.midY) / (rows[last].count + 1)
+                rows[last].count += 1
                 rows[last].glyphs.append(glyph)
             } else {
-                rows.append((glyph.midY, [glyph]))
+                rows.append((glyph.midY, 1, [glyph]))
             }
         }
         return rows.map { row in
@@ -195,7 +203,7 @@ enum TimetablePDF {
             var text = ""
             var words: [Word] = []
             for (index, glyph) in sorted.enumerated() {
-                if index > 0, glyph.breakBefore || glyph.minX - sorted[index - 1].maxX > glyph.height * 0.2 {
+                if index > 0, glyph.breakBefore || glyph.minX - sorted[index - 1].maxX > unit * 0.6 {
                     text += " "
                     words.append(Word(text: glyph.text, minX: glyph.minX, maxX: glyph.maxX))
                 } else if words.isEmpty {

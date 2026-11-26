@@ -24,6 +24,10 @@ struct ChatScreen: View {
     /// Voice: hold the mic to record, release to send, slide left to cancel.
     @State private var recorder = VoiceRecorder()
     @State private var micHeld = false
+    /// True only while a finger is really on the mic. Unlike `onEnded`, this also
+    /// resets when iOS cancels the touch (a call, the view rearranging), so a
+    /// recording is never left running to the limit and sent by accident.
+    @GestureState private var micPressing = false
     @State private var micSlide: CGFloat = 0
     @State private var micHint = false
     /// The message being answered (shown above the composer until sent or dismissed).
@@ -87,7 +91,10 @@ struct ChatScreen: View {
             VoicePlayer.shared.stop()
             recorder.cancel()
         }
-        .onChange(of: scenePhase) { _, phase in store.setViewing(visible && phase == .active) }
+        .onChange(of: scenePhase) { _, phase in
+            store.setViewing(visible && phase == .active)
+            if phase != .active && recorder.isRecording { recorder.cancel() }
+        }
         .onChange(of: draft) { _, text in
             store.setTyping(!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -276,6 +283,13 @@ struct ChatScreen: View {
         let ready = Self.canSubmit(draft: draft, canSend: store.canSend)
         let tooLong = draft.trimmingCharacters(in: .whitespacesAndNewlines).utf8.count > WatchlinkStore.maxMessageBytes
         return VStack(alignment: .leading, spacing: 4) {
+            if micHint {
+                Text("Kaydetmek için basılı tut, göndermek için bırak.")
+                    .font(.caption)
+                    .foregroundStyle(Room.ink3)
+                    .padding(.leading, 16)
+                    .wlTransition(.opacity, reduceMotion: reduceMotion)
+            }
             if let replyTarget, !recorder.isRecording {
                 ReplyBar(target: replyTarget,
                          partnerName: store.partnerName.isEmpty ? partner.displayName : store.partnerName) {
@@ -327,13 +341,6 @@ struct ChatScreen: View {
                         .stroke(composing ? Room.sage.opacity(0.3) : Room.ink.opacity(0.07), lineWidth: 1))
                     .shadow(color: Room.ink.opacity(composing ? 0.14 : 0.06), radius: composing ? 16 : 9, y: composing ? 10 : 6)
             }
-            if micHint {
-                Text("Kaydetmek için basılı tut, göndermek için bırak.")
-                    .font(.caption)
-                    .foregroundStyle(Room.ink3)
-                    .padding(.leading, 16)
-                    .wlTransition(.opacity, reduceMotion: reduceMotion)
-            }
             if tooLong {
                 Text("Tek mesaj için çok uzun.")
                     .font(.caption)
@@ -370,6 +377,7 @@ struct ChatScreen: View {
             .contentShape(Circle())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .updating($micPressing) { _, pressing, _ in pressing = true }
                     .onChanged { value in
                         if !micHeld {
                             micHeld = true
@@ -383,6 +391,13 @@ struct ChatScreen: View {
                         micSlide = 0
                     }
             )
+            .onChange(of: micPressing) { _, pressing in
+                // The touch ended without `onEnded`: it was cancelled. Discard, never send.
+                guard !pressing, micHeld else { return }
+                micHeld = false
+                micSlide = 0
+                if recorder.isRecording { recorder.cancel() }
+            }
             .accessibilityElement()
             .accessibilityLabel(recording ? "Kaydı gönder" : "Sesli mesaj kaydet")
             .accessibilityAddTraits(.isButton)
@@ -971,12 +986,15 @@ private struct RecordingStrip: View {
             Spacer(minLength: 4)
             Label(cancelling ? "Bırak, iptal" : "İptal", systemImage: "chevron.left")
                 .font(.footnote)
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundStyle(cancelling ? Room.blocking : Room.ink3)
                 .offset(x: max(slide * 0.5, -50))
         }
         .padding(.leading, 12)
         .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Kaydediliyor, \(Int(elapsed)) saniye")
     }

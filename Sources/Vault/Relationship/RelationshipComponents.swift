@@ -20,13 +20,17 @@ struct ScreenScaffold<Content: View>: View {
                 .frame(maxWidth: .infinity)
             // Under the status bar: solid ground fading out just below it, so
             // scrolled content slips away instead of running into the clock.
-            LinearGradient(stops: [.init(color: ground, location: 0), .init(color: ground, location: 0.55),
-                                   .init(color: ground.opacity(0), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-                .frame(height: 14)
-                .ignoresSafeArea(edges: .top)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            GeometryReader { geometry in
+                let inset = geometry.safeAreaInsets.top
+                LinearGradient(stops: [.init(color: ground, location: 0),
+                                       .init(color: ground, location: inset / (inset + 16)),
+                                       .init(color: ground.opacity(0), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: inset + 16)
+                    .ignoresSafeArea(edges: .top)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
         }
     }
 }

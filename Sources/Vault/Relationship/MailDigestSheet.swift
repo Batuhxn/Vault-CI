@@ -73,7 +73,7 @@ struct MailDigestSheet: View {
 
     private var demo: Bool {
         #if DEBUG
-        DemoChatBackend.isOn
+        DemoMode.isOn
         #else
         false
         #endif

@@ -25,16 +25,15 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Select Xcode 26.3
+      # Screenshots only, nothing ships from here: use the newest Xcode on the
+      # image, whose iOS simulator runtime is installed (TestFlight stays on 26.3).
+      - name: Select the newest Xcode
         run: |
           set -euo pipefail
-          xcode_path=/Applications/Xcode_26.3.app
-          if [ ! -d "$xcode_path" ]; then
-            echo "::error::$xcode_path not found on this runner image. Installed:"
-            ls -d /Applications/Xcode*.app
-            exit 1
-          fi
+          xcode_path="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           sudo xcode-select -s "$xcode_path"
+          xcodebuild -version
+          xcrun simctl list runtimes | grep -i ios || true
 
       - name: Install XcodeGen and generate the project
         run: |
@@ -47,28 +46,40 @@ jobs:
           REQUESTED: ${{ inputs.devices }}
         run: |
           set -euo pipefail
-          xcrun simctl list devices available -j > "$RUNNER_TEMP/devices.json"
-          python3 - "$RUNNER_TEMP/devices.json" <<'PY' >> "$GITHUB_ENV"
-          import json, os, sys
-          data = json.load(open(sys.argv[1]))["devices"]
-          ios = [d for runtime, ds in data.items() if "iOS" in runtime for d in ds]
-          names = sorted({d["name"] for d in ios if d["name"].startswith("iPhone")})
+          xcodebuild -showdestinations -project Vault.xcodeproj -scheme Vault-App > "$RUNNER_TEMP/dest.txt" 2>/dev/null || true
+          python3 - "$RUNNER_TEMP/dest.txt" <<'PY' >> "$GITHUB_ENV"
+          import os, re, sys
+          sims = []
+          for line in open(sys.argv[1]):
+              if "platform:iOS Simulator" in line and "name:iPhone" in line and "placeholder" not in line:
+                  fields = dict(re.findall(r"(\w+):([^,}]+)", line))
+                  sims.append((fields["name"].strip(), fields.get("OS", "").strip(), fields["id"].strip()))
+          sims.sort(key=lambda s: [int(x) for x in re.findall(r"\d+", s[1])], reverse=True)
+          newest = sims[0][1] if sims else ""
+          current = [s for s in sims if s[1] == newest]
           requested = [n.strip() for n in os.environ.get("REQUESTED", "").split(",") if n.strip()]
-          wanted = requested or ["iPhone 16e", "iPhone SE (3rd generation)", "iPhone 17 Pro Max", "iPhone 16 Pro Max"]
-          chosen = [n for n in wanted if n in names]
-          small = next((n for n in chosen if "Max" not in n and "Plus" not in n), names[0])
-          large = next((n for n in chosen if "Max" in n), names[-1])
-          picked = requested and [n for n in requested if n in names] or [small, large]
-          print("TOUR_DEVICES=" + "|".join(dict.fromkeys(picked)))
+          def find(names):
+              for n in names:
+                  for s in current:
+                      if s[0] == n: return s
+              return None
+          if requested:
+              picked = [s for s in (find([n]) for n in requested) if s]
+          else:
+              small = find(["iPhone 16e", "iPhone SE (3rd generation)", "iPhone 17", "iPhone 16"]) or (current[0] if current else None)
+              large = find(["iPhone 17 Pro Max", "iPhone 16 Pro Max", "iPhone Air"]) or (current[-1] if current else None)
+              picked = [s for s in (small, large) if s]
+          print("TOUR_DEVICES=" + "|".join(f"{s[2]}={s[0]} ({s[1]})" for s in dict.fromkeys(picked)))
           PY
           grep TOUR_DEVICES "$GITHUB_ENV"
+          grep -q "TOUR_DEVICES=." "$GITHUB_ENV" || { echo "::error::no iPhone simulator"; cat "$RUNNER_TEMP/dest.txt"; exit 1; }
 
       - name: Build for testing
         run: |
           set -euo pipefail
           first="${TOUR_DEVICES%%|*}"
           xcodebuild build-for-testing -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
-            -destination "platform=iOS Simulator,name=$first" \
+            -destination "id=${first%%=*}" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= | tail -n 30
 
@@ -77,13 +88,15 @@ jobs:
           set -uo pipefail
           IFS='|' read -ra devices <<< "$TOUR_DEVICES"
           mkdir -p "$RUNNER_TEMP/shots"
-          for device in "${devices[@]}"; do
-            slug="$(echo "$device" | tr -cs 'A-Za-z0-9' '-' | sed 's/-*$//')"
+          for entry in "${devices[@]}"; do
+            device="${entry%%=*}"
+            label="${entry#*=}"
+            slug="$(echo "$label" | tr -cs 'A-Za-z0-9' '-' | sed 's/-*$//')"
             bundle="$RUNNER_TEMP/tour-$slug.xcresult"
             xcrun simctl boot "$device" 2>/dev/null || true
             xcrun simctl status_bar "$device" override --time "9:41" --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3 2>/dev/null || true
             xcodebuild test-without-building -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
-              -destination "platform=iOS Simulator,name=$device" \
+              -destination "id=$device" \
               -derivedDataPath "$RUNNER_TEMP/dd" \
               -resultBundlePath "$bundle" \
               -only-testing:WatchlinkUITests | tail -n 25

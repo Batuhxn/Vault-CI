@@ -137,7 +137,7 @@ final class AppModel {
             PushCenter.shared.onToken = { [weak fresh] token in
                 Task { await fresh?.savePushToken(token) }
             }
-            Task { await PushCenter.shared.register() }
+            if !Self.isDemo { Task { await PushCenter.shared.register() } }
         } else {
             return  // keys not in place yet (or not on this phone)
         }
@@ -155,6 +155,15 @@ final class AppModel {
         errorMessage = nil
         defer { busy = false }
         do { try await work() } catch { errorMessage = Self.describe(error) }
+    }
+
+    /// The simulator UI tour: no notification prompt (it would cover the screens).
+    static var isDemo: Bool {
+        #if DEBUG
+        DemoMode.isOn
+        #else
+        false
+        #endif
     }
 
     static func describe(_ error: Error) -> String {

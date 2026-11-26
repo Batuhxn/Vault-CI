@@ -120,6 +120,20 @@ targets:
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: "-O"
 
+  # Simulator UI tour (demo mode): photographs every screen for review.
+  WatchlinkUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/WatchlinkUITests
+    dependencies:
+      - target: Vault-App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.uitests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: Vault-App
+
 schemes:
   Vault-App:
     build:
@@ -127,5 +141,9 @@ schemes:
         Vault-App: all
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - WatchlinkUITests
     archive:
       config: Release

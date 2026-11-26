@@ -4,6 +4,9 @@ import FirebaseCore
 @MainActor
 enum BackendBootstrap {
     static func makeBackend() -> any ChatBackend {
+        #if DEBUG
+        if DemoMode.isOn { return DemoChatBackend() }
+        #endif
         if FirebaseApp.app() == nil { FirebaseApp.configure() }
         return FirebaseChatBackend()
     }

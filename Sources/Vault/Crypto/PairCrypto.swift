@@ -35,18 +35,27 @@ enum PairCrypto {
         return key
     }
 
+    #if DEBUG
+    /// Demo mode (UI tour on the simulator) keeps its identity in memory, off the Keychain.
+    nonisolated(unsafe) static var demoIdentities: [String: Curve25519.KeyAgreement.PrivateKey] = [:]
+    #endif
+
     /// The identity lives in iCloud Keychain (end-to-end encrypted by Apple),
     /// so a reinstall or a new iPhone signed in to the same Apple Account gets
     /// the same key back and the conversation history stays readable. With
     /// iCloud Keychain off it simply stays on this device.
     static func storedIdentity(for userID: String) throws -> Curve25519.KeyAgreement.PrivateKey? {
-        if let data = try read(userID, synced: true) {
+        #if DEBUG
+        if let demo = demoIdentities[userID] { return demo }
+        #endif
+        if let data = try? read(userID, synced: true) {
             return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
         }
         // Builds before 0.1.2 kept a device-only copy: move it into iCloud Keychain.
         guard let legacy = try read(userID, synced: false) else { return nil }
         let key = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: legacy)
-        if (try? store(key, for: userID)) != nil {
+        // Delete the device-only copy only once iCloud Keychain really holds the key.
+        if (try? store(key, for: userID)) == true {
             SecItemDelete(baseQuery(userID, synced: false) as CFDictionary)
         }
         return key
@@ -63,13 +72,22 @@ enum PairCrypto {
         return data
     }
 
-    private static func store(_ key: Curve25519.KeyAgreement.PrivateKey, for userID: String) throws {
+    /// True when stored in iCloud Keychain, false when it fell back to this device only.
+    @discardableResult
+    private static func store(_ key: Curve25519.KeyAgreement.PrivateKey, for userID: String) throws -> Bool {
         var query = baseQuery(userID, synced: true)
         query[kSecValueData as String] = key.rawRepresentation
         // Synced items can't be "this device only"; still unreadable until first unlock.
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess || status == errSecDuplicateItem else { throw Failure.keychain(status) }
+        if status == errSecSuccess || status == errSecDuplicateItem { return true }
+        // No iCloud Keychain available to this build (e.g. unusual device state): keep it on the device.
+        var local = baseQuery(userID, synced: false)
+        local[kSecValueData as String] = key.rawRepresentation
+        local[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let fallback = SecItemAdd(local as CFDictionary, nil)
+        guard fallback == errSecSuccess || fallback == errSecDuplicateItem else { throw Failure.keychain(status) }
+        return false
     }
 
     private static func baseQuery(_ userID: String, synced: Bool) -> [String: Any] {

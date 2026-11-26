@@ -60,6 +60,8 @@ struct HomeView: View {
             HeadlineBlock(meta: now.formatted(.dateTime.weekday(.wide).day().month(.wide)),
                           headline: Self.headline(at: now, name: relationship.snapshot.profile.me.name))
                 .padding(.bottom, 16)
+            TodayStrip(timetable: Timetable.shared, partnerName: partnerName, now: now)
+                .padding(.horizontal, 14)
             AgendaCard(agenda: store.agenda, partnerName: partnerName)
                 .padding(.horizontal, 14)
             ForEach(cards, id: \.card) { item in

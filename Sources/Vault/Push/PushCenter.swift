@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        Timetable.registerCategory()
         return true
     }
 
@@ -56,9 +57,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// plays as haptics), so no banner on top of it.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions {
-        // Exam reminders are local and worth seeing even with the app open.
-        notification.request.identifier.hasPrefix("wl.agenda.") ? [.banner, .sound, .list] : []
+        // Exam and class reminders are local and worth seeing even with the app open.
+        let id = notification.request.identifier
+        return id.hasPrefix("wl.agenda.") || id.hasPrefix("wl.class.") ? [.banner, .sound, .list] : []
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {}
+    /// A class reminder's button (Gidiyorum / Gitmiyorum / Ders iptal / Muafım) marks that class.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        let content = response.notification.request.content
+        guard content.categoryIdentifier == "wl.class" else { return }
+        let action = response.actionIdentifier
+        let info = content.userInfo
+        guard let key = info["key"] as? String else { return }
+        await MainActor.run { Timetable.shared.handle(actionID: action, key: key) }
+    }
 }

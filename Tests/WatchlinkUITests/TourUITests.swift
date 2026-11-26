@@ -112,6 +112,26 @@ final class TourUITests: XCTestCase {
             shot(prefix, "mail-digest")
             XCTAssertTrue(tapIfExists(app.buttons["Bitti"]))
         }
+        // Timetable: imported from the SIS PDF fixture by the real reader.
+        let openedTimetable = tapIfExists(app.buttons["Ders Programı"], timeout: 10)
+        XCTAssertTrue(openedTimetable)
+        if openedTimetable {
+            XCTAssertTrue(app.staticTexts["PHYS 103L"].firstMatch.waitForExistence(timeout: 5), "fixture PDF not parsed")
+            shot(prefix, "timetable")
+            app.swipeUp()
+            shot(prefix, "timetable-week")
+            app.swipeDown()
+            app.swipeDown()
+            if tapIfExists(app.staticTexts["EE 303"].firstMatch, timeout: 5) {
+                sleep(1)
+                shot(prefix, "course")
+                app.swipeUp()
+                shot(prefix, "course-history")
+                _ = tapIfExists(app.navigationBars.buttons.element(boundBy: 0))
+                sleep(1)
+            }
+            XCTAssertTrue(tapIfExists(app.buttons["Bitti"]))
+        }
         app.swipeUp()
         shot(prefix, "us-2")
         app.swipeUp()

@@ -189,6 +189,7 @@ final class WatchlinkStore {
         monitor.start(queue: DispatchQueue(label: "watchlink.path"))
         self.monitor = monitor
         agenda.start()
+        Timetable.shared.attach(backend: backend, pairID: pair.id, myID: myID, partnerID: partnerID, session: session)
         if let partnerID {
             presenceListener = backend.observePresence(pairID: pair.id, member: partnerID) { [weak self] sealed, at in
                 Task { @MainActor in self?.receivePresence(sealed, at: at) }
@@ -200,6 +201,7 @@ final class WatchlinkStore {
         listener?.cancel(); listener = nil
         presenceListener?.cancel(); presenceListener = nil
         agenda.stop()
+        Timetable.shared.detach()
         for task in [typingIdle, hereBeat, partnerTypingExpiry, partnerHereExpiry] { task?.cancel() }
         monitor?.cancel(); monitor = nil
     }

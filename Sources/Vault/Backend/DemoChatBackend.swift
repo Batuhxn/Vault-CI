@@ -216,6 +216,29 @@ final class DemoChatBackend: ChatBackend {
             item("Kulüp toplantısı", today.addingTimeInterval(4 * 86_400 + 18 * 3600)),
         ])
         memberDocs["agenda/\(p)"] = (seal(agenda, aad: session.agendaAAD(of: p)), now)
+
+        // Timetables. Mine: the SIS PDF fixture read by the real importer.
+        // A few weeks tracked, one absence, the last two classes left unmarked.
+        let mine = TimetableFixture.courses()
+        let since = calendar.date(byAdding: .day, value: -21, to: today) ?? today
+        let past = Timetable.occurrences(of: mine, from: since, to: now).filter { $0.end <= now }
+        var marks: [String: AttendanceMark] = [:]
+        for (index, occurrence) in past.dropLast(2).enumerated() {
+            marks[occurrence.key] = occurrence.course.code == "EE 303" && index % 3 == 1 ? .absent : .attended
+        }
+        Timetable.shared.useDemo(courses: mine, since: since, limits: ["EE 303": 4], marks: marks)
+
+        // Hers: in a class right now, another later today.
+        let weekday = calendar.component(.weekday, from: now)
+        let minute = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+        let classStart = max(0, minute - 40), classEnd = min(1439, minute + 50)
+        let later = min(1380, classEnd + 130)
+        let hers = SealedTimetable(courses: [
+            Course(code: "PHYS 102", name: "Physics II", sessions: [ClassSession(weekday: weekday, start: classStart, end: classEnd, room: "B201")]),
+            Course(code: "MATH 116", name: "Calculus II", sessions: [ClassSession(weekday: weekday, start: later, end: min(1439, later + 50), room: "A210")]),
+            Course(code: "EE 204", name: "Circuits II", sessions: [ClassSession(weekday: weekday % 7 + 1, start: 600, end: 770, room: "A414")]),
+        ])
+        memberDocs["timetable/\(p)"] = (seal(hers, aad: session.timetableAAD(of: p)), now)
     }
 
     /// A small painted "photo": evening sky, sun, sea.

@@ -159,7 +159,14 @@ enum TimetablePDF {
         for (code, list) in sessions where !courses.contains(where: { $0.code == code }) {
             courses.append(Course(code: code, name: "", sessions: list.sorted { ($0.dayOrder, $0.start) < ($1.dayOrder, $1.start) }))
         }
-        diagnostics = "columns \(columns.count), days \(centres.count), courses \(courses.count), slots \(sessions.values.map(\.count).reduce(0, +))"
+        #if DEBUG
+        let heights = glyphs.map(\.height).sorted()
+        let median = heights.isEmpty ? 0 : heights[heights.count / 2]
+        diagnostics = "glyphs \(glyphs.count) h~\(Int(median * 10)) cols \(columns.map { Int($0) }) days \(centres.map { Int($0.x) }) "
+            + "courses \(courses.count) slots \(sessions.values.map(\.count).reduce(0, +)) stop \(stop < 1e9 ? Int(stop) : -1) "
+            + "grid: " + gridLines.prefix(14).map(\.text).joined(separator: " ¦ ")
+            + " list: " + full.filter { $0.top >= stop }.prefix(3).map(\.text).joined(separator: " ¦ ")
+        #endif
         return courses.contains(where: { !$0.sessions.isEmpty }) ? courses : nil
     }
 

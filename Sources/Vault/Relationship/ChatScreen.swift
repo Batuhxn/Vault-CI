@@ -255,8 +255,10 @@ struct ChatScreen: View {
                 if typing && atBottom { scrollToBottom(proxy) }
             }
             // Opening the keyboard shrinks the view: keep the newest message in sight.
+            // The keyboard opening or closing (and the tab bar coming back) resizes
+            // the transcript: keep the newest message in sight when it was in sight.
             .onChange(of: composing) { _, isComposing in
-                if isComposing { scrollToBottom(proxy) }
+                if isComposing || atBottom { scrollToBottom(proxy) }
             }
         }
     }
@@ -911,6 +913,8 @@ private struct VoiceBubble: View {
             Text(voiceTime(playing ? seconds * player.progress : seconds))
                 .font(.footnote.monospacedDigit())
                 .foregroundStyle(Room.ink3)
+                .lineLimit(1)
+                .fixedSize()
                 .frame(minWidth: 34, alignment: .trailing)
         }
         .padding(.leading, 8)
@@ -918,6 +922,7 @@ private struct VoiceBubble: View {
         .padding(.vertical, 8)
         .background(mine ? Room.mine : Room.paper, in: shape)
         .overlay { if !mine { shape.stroke(Room.ink.opacity(0.06), lineWidth: 1) } }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(mine ? "Sesli mesajın" : "Sesli mesaj"), \(Int(seconds.rounded())) saniye")
         .accessibilityAddTraits(.isButton)

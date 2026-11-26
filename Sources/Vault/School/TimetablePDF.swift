@@ -51,34 +51,66 @@ enum TimetablePDF {
     }
 
     /// Characters with their boxes, top-left origin.
+    ///
+    /// PDFKit's per-character boxes are tight around the ink (a colon is tiny,
+    /// "a" sits lower than "M"), which scatters one visual line across many
+    /// heights. So the vertical position comes from PDFKit's own line
+    /// segmentation (`selectionsByLine`) and only the horizontal position from
+    /// the character box.
     static func glyphs(of page: PDFPage) -> [Glyph] {
         guard let string = page.string else { return [] }
         let text = string as NSString
         let height = page.bounds(for: .mediaBox).maxY
         var result: [Glyph] = []
         result.reserveCapacity(text.length)
-        var pendingBreak = false
-        for index in 0..<text.length {
-            let character = text.substring(with: NSRange(location: index, length: 1))
-            if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                pendingBreak = true
-                continue
-            }
-            let box = page.characterBounds(at: index)
-            if box.isNull || box.isEmpty || box.width <= 0 || box.height <= 0 {
-                // A combining mark (the dot of İ) belongs to the previous letter.
-                if !result.isEmpty, character.unicodeScalars.allSatisfy({ $0.properties.isGraphemeExtend }) {
-                    let last = result.removeLast()
-                    result.append(Glyph(text: last.text + character, minX: last.minX, maxX: last.maxX,
-                                        top: last.top, bottom: last.bottom, breakBefore: last.breakBefore))
+        let lines = page.selection(for: page.bounds(for: .mediaBox))?.selectionsByLine() ?? []
+        for line in lines {
+            let box = line.bounds(for: page)
+            guard !box.isNull, !box.isEmpty else { continue }
+            let top = height - box.maxY, bottom = height - box.minY
+            var pendingBreak = true
+            for part in 0..<line.numberOfTextRanges(on: page) {
+                let range = line.range(at: part, on: page)
+                guard range.location != NSNotFound, range.location + range.length <= text.length else { continue }
+                for index in range.location..<(range.location + range.length) {
+                    append(index: index, text: text, page: page, top: top, bottom: bottom,
+                           pendingBreak: &pendingBreak, into: &result)
                 }
-                continue
             }
-            result.append(Glyph(text: character, minX: box.minX, maxX: box.maxX,
-                                top: height - box.maxY, bottom: height - box.minY, breakBefore: pendingBreak))
-            pendingBreak = false
+        }
+        if result.isEmpty {
+            // No line information: fall back to the character boxes alone.
+            var pendingBreak = false
+            for index in 0..<text.length {
+                let box = page.characterBounds(at: index)
+                append(index: index, text: text, page: page, top: height - box.maxY, bottom: height - box.minY,
+                       pendingBreak: &pendingBreak, into: &result)
+            }
         }
         return result
+    }
+
+    private static func append(index: Int, text: NSString, page: PDFPage, top: CGFloat, bottom: CGFloat,
+                               pendingBreak: inout Bool, into result: inout [Glyph]) {
+        let character = text.substring(with: NSRange(location: index, length: 1))
+        if character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pendingBreak = true
+            return
+        }
+        let box = page.characterBounds(at: index)
+        if box.isNull || box.isEmpty || box.width <= 0 {
+            // A combining mark (the dot of İ) belongs to the previous letter.
+            if !result.isEmpty, character.unicodeScalars.allSatisfy({ $0.properties.isGraphemeExtend }) {
+                let last = result.removeLast()
+                result.append(Glyph(text: last.text + character, minX: last.minX, maxX: last.maxX,
+                                    top: last.top, bottom: last.bottom, breakBefore: last.breakBefore))
+            }
+            return
+        }
+        guard bottom > top else { return }
+        result.append(Glyph(text: character, minX: box.minX, maxX: box.maxX, top: top, bottom: bottom,
+                            breakBefore: pendingBreak))
+        pendingBreak = false
     }
 
     // MARK: Parsing (pure; works on any glyph list)
@@ -86,7 +118,9 @@ enum TimetablePDF {
     static func parse(glyphs: [Glyph]) -> [Course]? {
         let heights = glyphs.map(\.height).sorted()
         let unit = heights.isEmpty ? 6 : heights[heights.count / 2]
-        let full = lines(glyphs, unit: unit)
+        let widths = glyphs.map { $0.maxX - $0.minX }.sorted()
+        let gap = max((widths.isEmpty ? 4 : widths[widths.count / 2]) * 0.35, 0.8)
+        let full = lines(glyphs, unit: unit, gap: gap)
         let days = dayNames.map(fold)
         guard let header = full.first(where: { line in line.words.filter { days.contains(fold($0.text)) }.count >= 5 }) else {
             diagnostics = "no day header in \(full.count) lines; first: \(full.prefix(3).map(\.text))"
@@ -104,7 +138,7 @@ enum TimetablePDF {
             ?? .greatestFiniteMagnitude
 
         let grid = glyphs.filter { $0.top > headerBottom + 2 && $0.bottom < stop - 1 }
-        let gridLines = lines(grid, unit: unit)
+        let gridLines = lines(grid, unit: unit, gap: gap)
 
         // Column left edges: where course codes start.
         var lefts: [CGFloat] = []
@@ -128,7 +162,7 @@ enum TimetablePDF {
             let cell = grid.filter { $0.minX >= left - 2 && $0.minX < next - 2 }
             var code: String?
             var body: [String] = []
-            for line in lines(cell, unit: unit) {
+            for line in lines(cell, unit: unit, gap: gap) {
                 let text = line.text.trimmingCharacters(in: .whitespaces)
                 if isCode(text) {
                     code = normalizedCode(text)
@@ -186,7 +220,7 @@ enum TimetablePDF {
     /// centre with a tolerance from the page's typical glyph height, and words
     /// break where the page text had a space or the gap is clearly wider than
     /// letter spacing.
-    private static func lines(_ glyphs: [Glyph], unit: CGFloat) -> [Line] {
+    private static func lines(_ glyphs: [Glyph], unit: CGFloat, gap: CGFloat) -> [Line] {
         let tolerance = max(unit * 0.6, 1.5)
         var rows: [(mid: CGFloat, count: CGFloat, glyphs: [Glyph])] = []
         for glyph in glyphs.sorted(by: { $0.midY < $1.midY }) {
@@ -203,7 +237,7 @@ enum TimetablePDF {
             var text = ""
             var words: [Word] = []
             for (index, glyph) in sorted.enumerated() {
-                if index > 0, glyph.breakBefore || glyph.minX - sorted[index - 1].maxX > unit * 0.6 {
+                if index > 0, glyph.breakBefore || glyph.minX - sorted[index - 1].maxX > gap {
                     text += " "
                     words.append(Word(text: glyph.text, minX: glyph.minX, maxX: glyph.maxX))
                 } else if words.isEmpty {

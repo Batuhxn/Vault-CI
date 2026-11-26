@@ -331,6 +331,10 @@ final class WatchlinkStore {
         }
     }
 
+    func mailDigestClient() -> MailDigestClient {
+        MailDigestClient(ownerID: myID, idToken: { [backend] in try await backend.idToken() })
+    }
+
     // MARK: Sending
 
     /// Synchronous by design (Stage 2's composer clears the draft on success).

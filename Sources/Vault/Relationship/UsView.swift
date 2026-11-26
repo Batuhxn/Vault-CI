@@ -7,6 +7,7 @@ private typealias Room = WatchlinkStyle.Room
 struct UsView: View {
     let store: WatchlinkStore
     let relationship: RelationshipStore
+    @State private var showMailDigest = false
 
     /// "Deniz\n& Ada." when both names exist; otherwise a name-free line.
     static func headline(me: Person, partner: Person) -> String {
@@ -30,6 +31,18 @@ struct UsView: View {
                     PairMonogram(partner: profile.partner.initial, me: profile.me.initial)
                         .padding(.horizontal, screenMargin)
                         .padding(.top, 28)
+                    Button { showMailDigest = true } label: {
+                        Label("Mail Özeti", systemImage: "envelope")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Room.sageDeep)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .frame(minHeight: 44)
+                            .wlCard(radius: 16)
+                    }
+                    .buttonStyle(Pressable())
+                    .padding(.horizontal, screenMargin)
+                    .padding(.top, 16)
                     narrative(profile)
                         .padding(.top, 56)
                     Text("Bu alan sizinle birlikte büyür.")
@@ -41,6 +54,9 @@ struct UsView: View {
                 }
             }
             .scrollIndicators(.hidden)
+        }
+        .sheet(isPresented: $showMailDigest) {
+            MailDigestSheet(store: store, client: store.mailDigestClient())
         }
     }
 

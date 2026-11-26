@@ -88,13 +88,19 @@ jobs:
           xcodebuild build-for-testing -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
             -destination "id=${first%%=*}" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= | tail -n 30
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= > "$RUNNER_TEMP/build.log" 2>&1 || {
+              grep -E "error:|\*\* BUILD FAILED" "$RUNNER_TEMP/build.log" | sort -u | head -n 60
+              tail -n 30 "$RUNNER_TEMP/build.log"
+              exit 1
+            }
+            tail -n 5 "$RUNNER_TEMP/build.log"
 
       - name: Run the tour on each simulator
         run: |
           set -uo pipefail
           IFS='|' read -ra devices <<< "$TOUR_DEVICES"
           mkdir -p "$RUNNER_TEMP/shots"
+          failed=0
           for entry in "${devices[@]}"; do
             device="${entry%%=*}"
             label="${entry#*=}"
@@ -108,7 +114,18 @@ jobs:
               -destination "id=$device" \
               -derivedDataPath "$RUNNER_TEMP/dd" \
               -resultBundlePath "$bundle" \
-              -only-testing:WatchlinkUITests | tail -n 25
+              -only-testing:WatchlinkUITests > "$RUNNER_TEMP/test-$slug.log" 2>&1 || failed=1
+            tail -n 25 "$RUNNER_TEMP/test-$slug.log"
+            # Say which assertion failed, with its line.
+            grep -E "error: -|XCTAssert|failed -" "$RUNNER_TEMP/test-$slug.log" | head -n 20 || true
+            xcrun xcresulttool get test-results tests --path "$bundle" 2>/dev/null \
+              | python3 -c 'import json,sys
+          def walk(n):
+              for c in n.get("children", []):
+                  if c.get("nodeType") == "Failure Message": print("::error::" + c.get("name", ""))
+                  walk(c)
+          d = json.load(sys.stdin)
+          for t in d.get("testNodes", []): walk(t)' || true
             mkdir -p "$RUNNER_TEMP/shots/$slug"
             xcrun xcresulttool export attachments --path "$bundle" --output-path "$RUNNER_TEMP/shots/$slug" || true
             # Name files after their attachment names (the manifest maps them).
@@ -130,6 +147,7 @@ jobs:
           PY
           done
           ls -R "$RUNNER_TEMP/shots" | head -100
+          exit "$failed"
 
       - name: Upload screenshots
         if: always()

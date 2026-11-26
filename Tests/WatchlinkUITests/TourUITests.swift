@@ -122,7 +122,15 @@ final class TourUITests: XCTestCase {
             shot(prefix, "timetable-week")
             app.swipeDown()
             app.swipeDown()
-            if tapIfExists(app.staticTexts["EE 303"].firstMatch, timeout: 5) {
+            app.swipeUp()
+            app.swipeUp()
+            app.swipeUp()
+            shot(prefix, "timetable-diagnostics")
+            app.swipeDown()
+            app.swipeDown()
+            app.swipeDown()
+            let course = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "EE 303")).firstMatch
+            if tapIfExists(course, timeout: 5) {
                 sleep(1)
                 shot(prefix, "course")
                 app.swipeUp()

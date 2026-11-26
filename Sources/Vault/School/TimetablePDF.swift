@@ -132,13 +132,20 @@ enum TimetablePDF {
         }
 
         var sessions: [String: [ClassSession]] = [:]
+        #if DEBUG
+        var cellDump: [String] = []
+        #endif
         for (index, left) in columns.enumerated() {
             let next = index + 1 < columns.count ? columns[index + 1] : .greatestFiniteMagnitude
             guard let day = centres.first(where: { $0.x >= left - 2 && $0.x < next })?.day else { continue }
             let cell = grid.filter { $0.minX >= left - 2 && $0.minX < next - 2 }
             var code: String?
             var body: [String] = []
-            for line in lines(cell, unit: unit, gap: gap) {
+            let cellLines = lines(cell, unit: unit, gap: gap)
+            #if DEBUG
+            cellDump.append("[\(dayNames[day].prefix(3))] " + cellLines.map { "\($0.text)@\(Int($0.base))" }.joined(separator: "|"))
+            #endif
+            for line in cellLines {
                 let text = line.text.trimmingCharacters(in: .whitespaces)
                 if isCode(text) {
                     code = normalizedCode(text)
@@ -174,7 +181,7 @@ enum TimetablePDF {
         #if DEBUG
         diagnostics = "glyphs \(glyphs.count) h~\(Int(unit * 10)) cols \(columns.map { Int($0) }) days \(centres.map { Int($0.x) }) "
             + "courses \(courses.count) slots \(sessions.values.map(\.count).reduce(0, +)) stop \(stop < 1e9 ? Int(stop) : -1) "
-            + "grid: " + gridLines.prefix(14).map(\.text).joined(separator: " ¦ ")
+            + "unit \(Int(unit * 10)) gap \(Int(gap * 10)) stopBase \(Int(stop < 1e9 ? stop : -1)) cells: " + cellDump.joined(separator: " ## ")
             + " list: " + full.filter { $0.base >= stop }.prefix(3).map(\.text).joined(separator: " ¦ ")
         #endif
         return courses.contains(where: { !$0.sessions.isEmpty }) ? courses : nil

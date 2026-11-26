@@ -190,6 +190,11 @@ struct TimetableSheet: View {
         } footer: {
             Text("Bildirimde Gidiyorum, Gitmiyorum, Ders iptal ve Muafım seçenekleri olur. Cevaplamadığın dersler işaretsiz kalır.")
         }
+        #if DEBUG
+        if DemoMode.isOn {
+            Section { Text("parse: \(TimetablePDF.diagnostics)").font(.caption2.monospaced()).foregroundStyle(Room.ink3) }
+        }
+        #endif
         Section {
             Button("Yeni PDF içe aktar") { importing = true }
             Button("Programı sil", role: .destructive) { confirmDelete = true }

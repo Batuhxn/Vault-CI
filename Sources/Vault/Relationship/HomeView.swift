@@ -15,6 +15,7 @@ struct HomeView: View {
     /// Presentation-only: a card the store has already resolved, shown confirmed
     /// for a short dwell before it tucks away. The store stays the only truth.
     @State private var confirming: [HomeCard: HomeCardContent] = [:]
+    @State private var readingLetter = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Partner rituals need both a secure link and the (not yet built) sync channel.
@@ -53,6 +54,12 @@ struct HomeView: View {
                 .animation(RelationshipMotion.resolve(RelationshipMotion.soft, reduceMotion: reduceMotion), value: cards.map(\.card))
             }
         }
+        .sheet(isPresented: $readingLetter) {
+            if let letter = LetterBox.shared.partners {
+                LetterView(letter: letter, from: partnerName) { readingLetter = false }
+                    .onAppear { LetterBox.shared.markOpened() }
+            }
+        }
     }
 
     private func room(now: Date, cards: [DisplayedCard], scrolling: Bool) -> some View {
@@ -60,6 +67,11 @@ struct HomeView: View {
             HeadlineBlock(meta: now.formatted(.dateTime.weekday(.wide).day().month(.wide)),
                           headline: Self.headline(at: now, name: relationship.snapshot.profile.me.name))
                 .padding(.bottom, 16)
+            if LetterBox.shared.unopened {
+                LetterCard(partnerName: partnerName) { readingLetter = true }
+                    .padding(.horizontal, 14)
+                    .wlTransition(.tuck, reduceMotion: reduceMotion)
+            }
             TodayStrip(timetable: Timetable.shared, partnerName: partnerName, now: now)
                 .padding(.horizontal, 14)
             AgendaCard(agenda: store.agenda, partnerName: partnerName)
@@ -289,5 +301,33 @@ extension RelationshipStore {
         update { state in
             if let index = state.signals.firstIndex(where: { $0.id == id }) { state.signals[index].acknowledged = true }
         }
+    }
+}
+
+/// The partner's note, waiting on Home until it is opened.
+private struct LetterCard: View {
+    let partnerName: String
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 12) {
+                Image(systemName: "envelope.fill")
+                    .foregroundStyle(Room.cream)
+                    .frame(width: 36, height: 36)
+                    .background(Room.sage, in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(partnerName.isEmpty ? "Partnerin" : partnerName) sana bir not bıraktı")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Room.ink)
+                    Text("Açmak için dokun").font(.caption).foregroundStyle(Room.ink3)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Room.ink3)
+            }
+            .padding(14)
+            .wlCard(radius: 20)
+        }
+        .buttonStyle(Pressable())
     }
 }

@@ -9,6 +9,9 @@ struct UsView: View {
     let relationship: RelationshipStore
     @State private var showMailDigest = false
     @State private var showTimetable = false
+    @State private var showTour = false
+    @State private var writingLetter = false
+    @State private var readingLetter = false
 
     /// "Deniz\n& Ada." when both names exist; otherwise a name-free line.
     static func headline(me: Person, partner: Person) -> String {
@@ -45,7 +48,12 @@ struct UsView: View {
                         .foregroundStyle(Room.ink3)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 64)
-                        .padding(.bottom, 40)
+                    Button("Tanıtımı yeniden göster") { showTour = true }
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Room.sageDeep)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .padding(.top, 6)
+                        .padding(.bottom, 32)
                 }
             }
             .scrollIndicators(.hidden)
@@ -56,12 +64,58 @@ struct UsView: View {
         .sheet(isPresented: $showTimetable) {
             TimetableSheet(timetable: Timetable.shared, partnerName: store.partnerName)
         }
+        .sheet(isPresented: $writingLetter) {
+            LetterComposer(letters: LetterBox.shared, partnerName: store.partnerName)
+        }
+        .sheet(isPresented: $readingLetter) {
+            if let letter = LetterBox.shared.partners {
+                LetterView(letter: letter, from: store.partnerName.isEmpty ? "Partnerin" : store.partnerName) { readingLetter = false }
+                    .onAppear { LetterBox.shared.markOpened() }
+            }
+        }
+        .fullScreenCover(isPresented: $showTour) {
+            WelcomeTour(myName: store.myName, partnerName: store.partnerName, letters: LetterBox.shared) { showTour = false }
+        }
     }
 
     @ViewBuilder
     private var schoolButtons: some View {
         schoolButton("Ders Programı", systemImage: "calendar") { showTimetable = true }
         schoolButton("Mail Özeti", systemImage: "envelope") { showMailDigest = true }
+    }
+
+    /// One note each way: theirs to read again, mine to write or edit.
+    @ViewBuilder
+    private var notes: some View {
+        let letters = LetterBox.shared
+        let partner = store.partnerName.isEmpty ? "Partnerin" : store.partnerName
+        if letters.partners != nil {
+            noteRow(title: store.partnerName.isEmpty ? "Partnerinin notu" : "\(Turkish.genitive(partner)) notu", detail: letters.unopened ? "Henüz açmadın" : "Yeniden oku",
+                    systemImage: "envelope.open") { readingLetter = true }
+        }
+        noteRow(title: letters.mine == nil ? "Ona bir not bırak" : "Notunu düzenle",
+                detail: letters.mine == nil ? "Uygulamayı ilk açtığında görür" : "Yazdığın not onda duruyor",
+                systemImage: "square.and.pencil") { writingLetter = true }
+    }
+
+    private func noteRow(title: String, detail: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(Room.sage)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(Room.ink)
+                    Text(detail).font(.caption).foregroundStyle(Room.ink3)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(Room.ink3)
+            }
+            .padding(14)
+            .frame(minHeight: 44)
+            .wlCard(radius: 18)
+        }
+        .buttonStyle(Pressable())
     }
 
     private func schoolButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -81,6 +135,9 @@ struct UsView: View {
         VStack(alignment: .leading, spacing: 48) {
             Chapter(title: "Kalp Atışı", marker: .filled) {
                 HeartbeatChapter(store: store, partner: profile.partner)
+            }
+            Chapter(title: "Notlar", marker: .filled) {
+                notes
             }
             Chapter(title: "Neredesiniz", marker: .filled) {
                 Text(Self.whereYouAre(store.securityState, connected: store.connectionAvailable))

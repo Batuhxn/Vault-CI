@@ -146,13 +146,30 @@ final class TourUITests: XCTestCase {
         app.swipeUp()
         shot(prefix, "us-3")
 
+        // The welcome, replayed from Biz; the demo partner left a note for its last page.
+        let replayed = tapIfExists(app.buttons["Tanıtımı yeniden göster"], timeout: 5)
+        XCTAssertTrue(replayed)
+        if replayed {
+            sleep(1)
+            shot(prefix, "welcome-1")
+            for page in 2...6 {
+                XCTAssertTrue(tapIfExists(app.buttons["Devam"], timeout: 5))
+                sleep(1)
+                shot(prefix, "welcome-\(page)")
+            }
+            XCTAssertTrue(tapIfExists(app.buttons["Notu aç"], timeout: 5))
+            sleep(2)
+            shot(prefix, "letter")
+            XCTAssertTrue(tapIfExists(app.buttons["Kapat"], timeout: 5))
+            sleep(1)
+        }
+
         // Back home after activity
         _ = tapIfExists(app.tabBars.buttons["Ana Sayfa"])
         sleep(1)
         shot(prefix, "home-after")
     }
 
-    @discardableResult
     /// A long press during the chat steps can leave a message menu open (it is a
     /// menu, not buttons, in some layouts): tap above it to close it.
     private func dismissMessageMenu() {
@@ -166,6 +183,7 @@ final class TourUITests: XCTestCase {
         }
     }
 
+    @discardableResult
     private func tapIfExists(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
         guard element.waitForExistence(timeout: timeout), element.isHittable else { return false }
         element.tap()

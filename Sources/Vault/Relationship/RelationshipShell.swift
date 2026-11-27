@@ -40,6 +40,8 @@ struct RelationshipShell: View {
     @State private var relationship: RelationshipStore?
     @State private var composerFocusRequested = false
     @State private var heartbeat = HeartbeatPlayer()
+    /// The welcome, once per pair on this phone.
+    @State private var welcoming = false
 
     // The Door
     @State private var privateOpen = false
@@ -94,6 +96,13 @@ struct RelationshipShell: View {
         .task {
             if relationship == nil { relationship = RelationshipStore() }
             syncNames()
+            welcoming = !Self.welcomed(store)
+        }
+        .fullScreenCover(isPresented: $welcoming) {
+            WelcomeTour(myName: store.myName, partnerName: store.partnerName, letters: LetterBox.shared) {
+                UserDefaults.standard.set(true, forKey: Self.welcomeKey(store))
+                welcoming = false
+            }
         }
         .onChange(of: store.pair) { _, _ in syncNames() }
         // A heartbeat the partner sends while the app is open is felt at once.
@@ -102,6 +111,16 @@ struct RelationshipShell: View {
             try? heartbeat.play(bpm: Double(bpm), duration: 10)
             store.incomingHeartbeat = nil
         }
+    }
+
+    static func welcomeKey(_ store: WatchlinkStore) -> String { "wl.welcome.\(store.pair.id).\(store.myID)" }
+
+    /// The UI tour opens the welcome itself (from Biz), so demo mode never covers the room.
+    static func welcomed(_ store: WatchlinkStore) -> Bool {
+        #if DEBUG
+        if DemoMode.isOn { return true }
+        #endif
+        return UserDefaults.standard.bool(forKey: welcomeKey(store))
     }
 
     /// Names live with the pair (each person sets their own); the local

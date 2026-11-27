@@ -243,6 +243,16 @@ final class DemoChatBackend: ChatBackend {
             Course(code: "EE 204", name: "Circuits II", sessions: [ClassSession(weekday: weekday % 7 + 1, start: 600, end: 770, room: "A414")]),
         ])
         memberDocs["timetable/\(p)"] = (seal(hers, aad: session.timetableAAD(of: p)), now)
+
+        // Her note, waiting for the welcome's last page.
+        let note = SealedLetter(text: """
+            Bunu okuyorsan uygulamayı açmışsın demek 🙂
+
+            Her gün konuşuyoruz ama bu küçük köşe sadece ikimizin. Vize haftalarında, yorgun akşamlarda, sıradan salılarda: bir mesaj kadar yakınım.
+
+            İyi ki varsın.
+            """, at: now)
+        memberDocs["letter/\(p)"] = (seal(note, aad: session.letterAAD(of: p)), now)
     }
 
     /// A small painted "photo": evening sky, sun, sea.

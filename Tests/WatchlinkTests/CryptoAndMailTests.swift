@@ -41,6 +41,7 @@ final class PairCryptoTests: XCTestCase {
         XCTAssertEqual(session.presenceAAD(of: "m"), "wl1|presence|P|m")
         XCTAssertEqual(session.agendaAAD(of: "m"), "wl1|agenda|P|m")
         XCTAssertEqual(session.timetableAAD(of: "m"), "wl1|timetable|P|m")
+        XCTAssertEqual(session.letterAAD(of: "m"), "wl1|letter|P|m")
     }
 }
 
@@ -71,5 +72,16 @@ final class MailDigestTests: XCTestCase {
     func testDemoEnvelopeOpens() throws {
         // The published test vector: P-256 + HKDF + AES-GCM, as the relay seals it.
         XCTAssertFalse(try MailDigestClient.demoDraft().items.isEmpty)
+    }
+}
+
+final class TurkishTests: XCTestCase {
+    func testGenitive() {
+        XCTAssertEqual(Turkish.genitive("Batuhan"), "Batuhan'ın")
+        XCTAssertEqual(Turkish.genitive("Elif"), "Elif'in")
+        XCTAssertEqual(Turkish.genitive("Ada"), "Ada'nın")
+        XCTAssertEqual(Turkish.genitive("Öykü"), "Öykü'nün")
+        XCTAssertEqual(Turkish.genitive("Umut"), "Umut'un")
+        XCTAssertEqual(Turkish.genitive("Deniz"), "Deniz'in")
     }
 }

@@ -32,6 +32,8 @@ struct RelationshipShell: View {
     }
 
     let store: WatchlinkStore
+    /// "Bağlantıyı bitir" (Biz): ends the pair for both phones.
+    var endPair: () async -> Void = {}
     @State private var destination = Destination.home
     /// -1 / +1: the side new content glides in from; 0: no glide (The Opening hands off).
     @State private var entrance: CGFloat = 0
@@ -160,7 +162,7 @@ struct RelationshipShell: View {
                            focusRequested: $composerFocusRequested, openPrivate: openPrivate,
                            goBack: backToHome) { moonFrame = $0 }
             case .us:
-                UsView(store: store, relationship: relationship)
+                UsView(store: store, relationship: relationship, endPair: endPair)
             }
         } else {
             ScreenScaffold { EmptyView() }

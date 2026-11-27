@@ -92,6 +92,14 @@ final class FirebaseChatBackend: ChatBackend {
         }
     }
 
+    func endPair(_ pairID: String) async throws {
+        let me = try uid()
+        try await db.collection("pairs").document(pairID).updateData([
+            "endedAt": FieldValue.serverTimestamp(),
+            "endedBy": me,
+        ])
+    }
+
     func currentPairs() async throws -> [PairInfo] {
         let me = try uid()
         let result = try await db.collection("pairs")
@@ -197,7 +205,8 @@ final class FirebaseChatBackend: ChatBackend {
         guard let data = snapshot.data(), let members = data["members"] as? [String] else { return nil }
         let keys = (data["pubkeys"] as? [String: Any] ?? [:]).compactMapValues { $0 as? Data }
         let sealed = (data["sealed"] as? [String: Any] ?? [:]).compactMapValues { $0 as? Data }
-        return PairInfo(id: snapshot.documentID, memberIDs: members, publicKeys: keys, sealedProfiles: sealed)
+        return PairInfo(id: snapshot.documentID, memberIDs: members, publicKeys: keys, sealedProfiles: sealed,
+                        ended: data["endedAt"] != nil)
     }
 
     private nonisolated static func message(from snapshot: QueryDocumentSnapshot) -> BackendMessage? {

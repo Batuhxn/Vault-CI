@@ -28,6 +28,8 @@ struct PairInfo: Equatable {
     var publicKeys: [String: Data] = [:]
     /// Each member's sealed `SealedProfile` (name, rhythm).
     var sealedProfiles: [String: Data] = [:]
+    /// A member ended this pair ("Bağlantıyı bitir"); it is never opened again.
+    var ended = false
     var isComplete: Bool { memberIDs.count == 2 }
 }
 
@@ -53,6 +55,8 @@ protocol ChatBackend: AnyObject {
     /// Creates a pair with only this user and returns an 8-character join code (15 min).
     func createPair(publicKey: Data) async throws -> (code: String, pairID: String)
     func joinPair(code: String, publicKey: Data) async throws
+    /// Marks the pair ended for both members (once; the server keeps who and when).
+    func endPair(_ pairID: String) async throws
     /// Complete pairs this user belongs to, newest first.
     func currentPairs() async throws -> [PairInfo]
     func observePair(_ pairID: String, onChange: @escaping (PairInfo) -> Void) -> ListenerToken

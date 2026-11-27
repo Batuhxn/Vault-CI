@@ -78,6 +78,26 @@ final class AppModel {
         }
     }
 
+    /// "Bağlantıyı bitir": ends the pair for both phones and returns here to the code screen.
+    /// My note stays on this phone and goes to the next pair.
+    func endPair() async {
+        guard case .paired(let pair) = phase else { return }
+        await run {
+            try await self.backend.endPair(pair.id)
+            self.leavePair()
+        }
+    }
+
+    private func leavePair() {
+        pairListener?.cancel()
+        pairListener = nil
+        store?.stop()
+        store = nil
+        PushCenter.shared.onToken = nil
+        SharedPairKey.removeAll()
+        phase = .unpaired
+    }
+
     func cancelWaiting() {
         pairListener?.cancel()
         phase = .unpaired
@@ -98,7 +118,8 @@ final class AppModel {
 
     private func loadPair() async {
         do {
-            let pairs = try await backend.currentPairs()
+            // Ended pairs stay on the server but are never opened again.
+            let pairs = try await backend.currentPairs().filter { !$0.ended }
             // Only a pair whose key this phone holds can be opened here.
             if let pair = pairs.first(where: { session(for: $0) != nil }) {
                 enterPaired(pair)
@@ -120,7 +141,12 @@ final class AppModel {
         pairListener = backend.observePair(pairID) { [weak self] pair in
             Task { @MainActor in
                 guard let self else { return }
-                if pair.isComplete { self.enterPaired(pair) }
+                if pair.ended {
+                    self.leavePair()
+                    self.errorMessage = "Bu bağlantı bitirildi. Yeniden bağlanmak için yeni bir kod oluşturun."
+                } else if pair.isComplete {
+                    self.enterPaired(pair)
+                }
             }
         }
     }

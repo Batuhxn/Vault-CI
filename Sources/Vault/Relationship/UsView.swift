@@ -7,7 +7,9 @@ private typealias Room = WatchlinkStyle.Room
 struct UsView: View {
     let store: WatchlinkStore
     let relationship: RelationshipStore
+    var endPair: () async -> Void = {}
     @State private var showMailDigest = false
+    @State private var confirmingEnd = false
     @State private var showTimetable = false
     @State private var showTour = false
     @State private var writingLetter = false
@@ -16,6 +18,11 @@ struct UsView: View {
     /// "Deniz\n& Ada." when both names exist; otherwise a name-free line.
     static func headline(me: Person, partner: Person) -> String {
         me.name.isEmpty || partner.name.isEmpty ? "Siz\nikiniz." : "\(me.name)\n& \(partner.name)."
+    }
+
+    static func endMessage(partner: String) -> String {
+        let with = partner.isEmpty ? "Bu bağlantı" : "\(partner) ile bu bağlantı"
+        return "\(with) kapanır ve iki telefon da kod ekranına döner. Eski mesajlar yeni bir bağlantıda görünmez. Yazdığın not, kuracağın yeni bağlantıya gider."
     }
 
     /// Trust, in plain terms: sealed on the phones, readable only on these two.
@@ -53,6 +60,10 @@ struct UsView: View {
                         .foregroundStyle(Room.sageDeep)
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .padding(.top, 6)
+                    Button("Bağlantıyı bitir") { confirmingEnd = true }
+                        .font(.footnote)
+                        .foregroundStyle(Room.blocking)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                         .padding(.bottom, 32)
                 }
             }
@@ -72,6 +83,12 @@ struct UsView: View {
                 LetterView(letter: letter, from: store.partnerName.isEmpty ? "Partnerin" : store.partnerName) { readingLetter = false }
                     .onAppear { LetterBox.shared.markOpened() }
             }
+        }
+        .confirmationDialog("Bağlantıyı bitir?", isPresented: $confirmingEnd, titleVisibility: .visible) {
+            Button("Bağlantıyı bitir", role: .destructive) { Task { await endPair() } }
+            Button("Vazgeç", role: .cancel) { }
+        } message: {
+            Text(Self.endMessage(partner: store.partnerName))
         }
         .fullScreenCover(isPresented: $showTour) {
             WelcomeTour(myName: store.myName, partnerName: store.partnerName, letters: LetterBox.shared) { showTour = false }

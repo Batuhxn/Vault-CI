@@ -21,7 +21,7 @@ struct AppRootView: View {
                 WaitingScreen(model: model, code: code)
             case .paired:
                 if let store = model.store {
-                    RelationshipShell(store: store)
+                    RelationshipShell(store: store) { await model.endPair() }
                 } else {
                     ScreenScaffold { ProgressView().tint(Room.sage).frame(maxHeight: .infinity) }
                 }

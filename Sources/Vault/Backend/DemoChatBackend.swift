@@ -54,6 +54,7 @@ final class DemoChatBackend: ChatBackend {
     func signOut() throws {}
     func createPair(publicKey: Data) async throws -> (code: String, pairID: String) { throw BackendError.pairFull }
     func joinPair(code: String, publicKey: Data) async throws { throw BackendError.pairFull }
+    func endPair(_ pairID: String) async throws {}
     func currentPairs() async throws -> [PairInfo] { [pair] }
 
     func observePair(_ pairID: String, onChange: @escaping (PairInfo) -> Void) -> ListenerToken {

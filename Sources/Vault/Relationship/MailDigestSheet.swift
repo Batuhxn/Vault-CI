@@ -17,6 +17,7 @@ struct MailDigestSheet: View {
     @State private var draft: MailDigest?
     /// When the owner's script last reached the relay; `checked` once the relay answered.
     @State private var seen: Date?
+    @State private var script: Int?
     @State private var checked = false
     @State private var busy = false
     @State private var status: String?
@@ -39,8 +40,21 @@ struct MailDigestSheet: View {
     private var connected: Bool { demo || storedConnected }
     /// The hourly script has not checked in for a while (or the relay has no mailbox):
     /// the summary has quietly stopped and reconnecting usually fixes it.
+    /// The hourly script runs an older version: a reconnect moves it to the new one.
+    /// Connected in the last few minutes: the first digest is still on its way.
+    private var justConnected: Bool {
+        guard let seen else { return false }
+        return Date().timeIntervalSince(seen) < 10 * 60 && draft == nil
+    }
+
+    private var outdated: Bool {
+        // -1: just reconnected, the new script has not checked in yet.
+        guard connected, checked, !busy, let script, script >= 0 else { return false }
+        return script < MailDigestClient.scriptVersion
+    }
+
     private var stale: Bool {
-        guard connected, checked, !busy else { return false }
+        guard connected, checked, !busy, !outdated else { return false }
         guard let seen else { return true }
         return Date().timeIntervalSince(seen) > 4 * 60 * 60
     }
@@ -49,11 +63,17 @@ struct MailDigestSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                if stale {
+                if outdated || stale {
                     Section {
-                        Label("Özet birkaç saattir güncellenmedi. Yeniden bağlamak genelde düzeltir.",
-                              systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(Room.noticeInk)
+                        if outdated {
+                            Label("Mail özeti güncellendi. Yeni hâline geçmek için bir kez yeniden bağla.",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                                .foregroundStyle(Room.noticeInk)
+                        } else {
+                            Label("Özet birkaç saattir güncellenmedi. Yeniden bağlamak genelde düzeltir.",
+                                  systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(Room.noticeInk)
+                        }
                         Button("Yeniden bağla") { Task { await connect() } }
                             .disabled(busy || !canConnect)
                     }
@@ -132,8 +152,9 @@ struct MailDigestSheet: View {
                 if busy {
                     ProgressView()
                 } else if status == nil {
-                    Text(connected ? "Henüz mail özeti yok. Yeni okul maili gelince burada olur."
-                                   : "Henüz mail özeti yok.")
+                    Text(!connected ? "Henüz mail özeti yok."
+                         : justConnected ? "İlk özet hazırlanıyor, birkaç dakika içinde burada."
+                         : "Henüz mail özeti yok. Yeni okul maili gelince burada olur.")
                         .foregroundStyle(.secondary)
                 }
                 if let status { Text(status).foregroundStyle(.secondary) }
@@ -293,17 +314,20 @@ struct MailDigestSheet: View {
             if demo {
                 draft = try MailDigestClient.demoDraft()
                 seen = Date().addingTimeInterval(-12 * 60)
+                script = MailDigestClient.scriptVersion
                 checked = true
                 return
             }
             #endif
-            let (latest, lastSeen) = try await client.draft()
+            let answer = try await client.draft()
+            let latest = answer.digest
             if draft?.shareText != latest?.shareText {
                 shared = false
                 expanded = []
             }
             draft = latest
-            seen = lastSeen
+            seen = answer.seen
+            script = answer.script
             checked = true
         } catch {
             status = "Mail özeti alınamadı. Bağlantını kontrol edip yeniden dene."
@@ -317,8 +341,9 @@ struct MailDigestSheet: View {
         do {
             let token = try await client.register()
             guard let page = MailDigestClient.connectPage(token: token) else { return }
-            draft = nil
+            // The relay keeps the last digest; the new script replaces it within minutes.
             seen = Date()
+            script = MailDigestClient.scriptVersion
             shared = false
             status = nil
             storedConnected = true

@@ -93,15 +93,30 @@ struct MailDigestClient {
         return try JSONDecoder().decode(Registration.self, from: data).ingestToken
     }
 
-    /// The latest digest, and when the owner's script last checked in (nil when
-    /// the relay holds no mailbox for this account).
-    func draft() async throws -> (digest: MailDigest?, seen: Date?) {
+    /// The script version this app expects (WATCHLINK_SCRIPT_VERSION in the Apps Script).
+    /// An hourly trigger stays on the version it was created under, so an older one
+    /// means the owner should reconnect.
+    static let scriptVersion = 7
+
+    struct Draft {
+        var digest: MailDigest?
+        /// When the owner's script last checked in; nil when the relay holds no mailbox.
+        var seen: Date?
+        /// The script version at that check-in (0: older than versioning, -1: reconnected,
+        /// the new script has not checked in yet).
+        var script: Int?
+    }
+
+    func draft() async throws -> Draft {
         let (data, response) = try await request("draft", expecting: [200, 204])
-        let seen = response.value(forHTTPHeaderField: "x-watchlink-seen")
+        var result = Draft()
+        result.seen = response.value(forHTTPHeaderField: "x-watchlink-seen")
             .flatMap(TimeInterval.init).map { Date(timeIntervalSince1970: $0) }
-        guard response.statusCode == 200 else { return (nil, seen) }
+        result.script = response.value(forHTTPHeaderField: "x-watchlink-script").flatMap { Int($0) }
+        guard response.statusCode == 200 else { return result }
         guard let key = try loadKey() else { throw ClientError.unavailableKey }
-        return (try Self.open(data, ownerID: ownerID, with: key), seen)
+        result.digest = try Self.open(data, ownerID: ownerID, with: key)
+        return result
     }
 
     /// What the summary should know: the owner's own rules, their courses, and

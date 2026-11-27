@@ -156,8 +156,12 @@ final class TourUITests: XCTestCase {
     /// A long press during the chat steps can leave a message menu open (it is a
     /// menu, not buttons, in some layouts): tap above it to close it.
     private func dismissMessageMenu() {
-        for _ in 0..<2 where app.descendants(matching: .any)["Kopyala"].exists {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.22)).tap()
+        for _ in 0..<2 {
+            let copy = app.descendants(matching: .any)["Kopyala"].firstMatch
+            guard copy.exists else { return }
+            // Tap the dimmed background on the side away from the menu.
+            let menuLow = copy.frame.midY > app.frame.midY
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: menuLow ? 0.08 : 0.94)).tap()
             sleep(1)
         }
     }

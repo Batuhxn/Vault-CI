@@ -124,7 +124,8 @@ final class TourUITests: XCTestCase {
         let openedTimetable = tapIfExists(app.buttons["Ders Programı"], timeout: 10)
         XCTAssertTrue(openedTimetable)
         if openedTimetable {
-            XCTAssertTrue(app.staticTexts["PHYS 103L"].firstMatch.waitForExistence(timeout: 5), "fixture PDF not parsed")
+            // The first course of the list (lower rows may not be drawn yet at large text sizes).
+            XCTAssertTrue(app.staticTexts["AI 233"].firstMatch.waitForExistence(timeout: 5), "fixture PDF not parsed")
             shot(prefix, "timetable")
             app.swipeUp()
             shot(prefix, "timetable-week")
@@ -147,7 +148,9 @@ final class TourUITests: XCTestCase {
         shot(prefix, "us-3")
 
         // The welcome, replayed from Biz; the demo partner left a note for its last page.
-        let replayed = tapIfExists(app.buttons["Tanıtımı yeniden göster"], timeout: 5)
+        let replay = app.buttons["Tanıtımı yeniden göster"]
+        for _ in 0..<6 where !(replay.exists && replay.isHittable) { app.swipeUp() }
+        let replayed = tapIfExists(replay, timeout: 5)
         XCTAssertTrue(replayed)
         if replayed {
             sleep(1)

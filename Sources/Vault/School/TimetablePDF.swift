@@ -101,11 +101,22 @@ enum TimetablePDF {
 
     // MARK: Parsing (pure; works on any glyph list)
 
-    static func parse(glyphs: [Glyph]) -> [Course]? {
+    /// Line height and the smallest gap that counts as a space, from the page's own glyphs.
+    private static func metrics(_ glyphs: [Glyph]) -> (unit: CGFloat, gap: CGFloat) {
         let heights = glyphs.map(\.height).sorted()
-        let unit = heights.isEmpty ? 6 : heights[heights.count / 2]
         let widths = glyphs.map { $0.maxX - $0.minX }.sorted()
-        let gap = max((widths.isEmpty ? 4 : widths[widths.count / 2]) * 0.35, 0.8)
+        return (heights.isEmpty ? 6 : heights[heights.count / 2],
+                max((widths.isEmpty ? 4 : widths[widths.count / 2]) * 0.35, 0.8))
+    }
+
+    /// The visual lines of a glyph list, as text (for tests and diagnostics).
+    static func lineTexts(_ glyphs: [Glyph]) -> [String] {
+        let (unit, gap) = metrics(glyphs)
+        return lines(glyphs, unit: unit, gap: gap).map(\.text)
+    }
+
+    static func parse(glyphs: [Glyph]) -> [Course]? {
+        let (unit, gap) = metrics(glyphs)
         let full = lines(glyphs, unit: unit, gap: gap)
         let days = dayNames.map(fold)
         guard let header = full.first(where: { line in line.words.filter { days.contains(fold($0.text)) }.count >= 5 }) else {

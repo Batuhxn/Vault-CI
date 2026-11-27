@@ -865,12 +865,21 @@ private struct ReplyBar: View {
 private struct TypingBubble: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// Still dots: Reduce Motion, or the UI tour (it waits for an idle screen,
+    /// and the demo partner types for the whole tour).
+    private var still: Bool {
+        #if DEBUG
+        if DemoMode.isOn { return true }
+        #endif
+        return reduceMotion
+    }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: still)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             HStack(spacing: 5) {
                 ForEach(0..<3, id: \.self) { index in
-                    let phase = reduceMotion ? 0 : sin((t * 5) - Double(index) * 0.9)
+                    let phase = still ? 0 : sin((t * 5) - Double(index) * 0.9)
                     Circle()
                         .fill(Room.ink3.opacity(0.45 + 0.35 * max(phase, 0)))
                         .frame(width: 7, height: 7)

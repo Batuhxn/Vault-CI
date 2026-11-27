@@ -95,6 +95,19 @@ jobs:
             }
             tail -n 5 "$RUNNER_TEMP/build.log"
 
+      - name: Unit tests
+        run: |
+          set -uo pipefail
+          first="${TOUR_DEVICES%%|*}"
+          xcrun simctl boot "${first%%=*}" 2>/dev/null || true
+          xcodebuild test-without-building -project Vault.xcodeproj -scheme Vault-App -configuration Debug \
+            -destination "id=${first%%=*}" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -only-testing:WatchlinkTests > "$RUNNER_TEMP/unit.log" 2>&1
+          status=$?
+          grep -E "error: -|Test Case .* (passed|failed)|Executed [0-9]+ test" "$RUNNER_TEMP/unit.log" | tail -n 40
+          [ $status -eq 0 ] || { tail -n 30 "$RUNNER_TEMP/unit.log"; echo "::error::unit tests failed"; exit 1; }
+
       - name: Run the tour on each simulator
         run: |
           set -uo pipefail

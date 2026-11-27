@@ -11,7 +11,11 @@ import UIKit
 /// second X25519 identity, each item is sealed with `PairCrypto` under the
 /// same additional data the app checks, and the app opens it like any other.
 enum DemoMode {
-    static var isOn: Bool { ProcessInfo.processInfo.arguments.contains("-WLDemo") }
+    /// The UI tour passes -WLDemo; unit tests host the app without Firebase too.
+    static var isOn: Bool {
+        ProcessInfo.processInfo.arguments.contains("-WLDemo")
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
 }
 
 @MainActor

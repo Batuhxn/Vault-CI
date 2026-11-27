@@ -217,7 +217,8 @@ enum TimetableFixture {
             context.beginPage()
             for (text, x, top, size) in words {
                 let font = UIFont.systemFont(ofSize: size * 0.9)
-                (text as NSString).draw(at: CGPoint(x: x, y: top), withAttributes: [.font: font, .foregroundColor: UIColor.black])
+                // A trailing space keeps word breaks in the page text, as in a real export.
+                (text + " " as NSString).draw(at: CGPoint(x: x, y: top), withAttributes: [.font: font, .foregroundColor: UIColor.black])
             }
         }
     }

@@ -93,11 +93,15 @@ struct MailDigestClient {
         return try JSONDecoder().decode(Registration.self, from: data).ingestToken
     }
 
-    func draft() async throws -> MailDigest? {
-        let (data, status) = try await request("draft", expecting: [200, 204])
-        guard status == 200 else { return nil }
+    /// The latest digest, and when the owner's script last checked in (nil when
+    /// the relay holds no mailbox for this account).
+    func draft() async throws -> (digest: MailDigest?, seen: Date?) {
+        let (data, response) = try await request("draft", expecting: [200, 204])
+        let seen = response.value(forHTTPHeaderField: "x-watchlink-seen")
+            .flatMap(TimeInterval.init).map { Date(timeIntervalSince1970: $0) }
+        guard response.statusCode == 200 else { return (nil, seen) }
         guard let key = try loadKey() else { throw ClientError.unavailableKey }
-        return try Self.open(data, ownerID: ownerID, with: key)
+        return (try Self.open(data, ownerID: ownerID, with: key), seen)
     }
 
     /// What the summary should know: the owner's own rules, their courses, and
@@ -119,7 +123,7 @@ struct MailDigestClient {
     }
 
     private func request(_ resource: String, method: String = "GET", body: Data? = nil,
-                         expecting: Set<Int>) async throws -> (Data, Int) {
+                         expecting: Set<Int>) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: Self.relay.appendingPathComponent(resource),
                                  cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.httpMethod = method
@@ -129,10 +133,10 @@ struct MailDigestClient {
             request.httpBody = body
         }
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let status = (response as? HTTPURLResponse)?.statusCode, expecting.contains(status) else {
+        guard let http = response as? HTTPURLResponse, expecting.contains(http.statusCode) else {
             throw ClientError.requestFailed
         }
-        return (data, status)
+        return (data, http)
     }
 
     private static func open(_ data: Data, ownerID: String, with key: P256.KeyAgreement.PrivateKey) throws -> MailDigest {

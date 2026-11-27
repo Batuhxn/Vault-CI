@@ -2,8 +2,7 @@
 # with XcodeGen on macOS: `xcodegen generate --spec project.yml`.
 #
 # The MLS/E2EE build (WatchlinkMLS package, Rust bridge, qualified test
-# suites) is parked on branch park/mls-e2ee. Its app-side files are kept in
-# Sources/Vault/Legacy for reference and are not compiled here.
+# suites, its app layer) is parked on branch park/mls-e2ee.
 #
 # Sources/Vault/GoogleService-Info.plist is gitignored; place it locally (or
 # write it from a CI secret) before building.
@@ -41,8 +40,6 @@ targets:
       ProvisioningStyle: Automatic
     sources:
       - path: Sources/Vault
-        excludes:
-          - Legacy/**
       - path: Resources/Assets.xcassets
       # Notification sounds are looked up in the app bundle (heartbeat.wav).
       - path: Resources/Sounds
@@ -120,6 +117,19 @@ targets:
           SWIFT_COMPILATION_MODE: wholemodule
           SWIFT_OPTIMIZATION_LEVEL: "-O"
 
+  # Unit tests (importer, calendar, crypto labels, mail digest decoding), hosted by the app.
+  WatchlinkTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/WatchlinkTests
+    dependencies:
+      - target: Vault-App
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.batuhxn.watchlink.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+
   # Simulator UI tour (demo mode): photographs every screen for review.
   WatchlinkUITests:
     type: bundle.ui-testing
@@ -144,6 +154,7 @@ schemes:
     test:
       config: Debug
       targets:
+        - WatchlinkTests
         - WatchlinkUITests
     archive:
       config: Release

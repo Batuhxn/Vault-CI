@@ -15,6 +15,9 @@ struct MailDigestSheet: View {
     /// What was last sent to the relay (rules, courses, push token), to send only changes.
     @AppStorage private var sentPrefs: String
     @State private var draft: MailDigest?
+    /// When the owner's script last reached the relay; `checked` once the relay answered.
+    @State private var seen: Date?
+    @State private var checked = false
     @State private var busy = false
     @State private var status: String?
     @State private var confirmShare = false
@@ -34,11 +37,27 @@ struct MailDigestSheet: View {
     }
 
     private var connected: Bool { demo || storedConnected }
+    /// The hourly script has not checked in for a while (or the relay has no mailbox):
+    /// the summary has quietly stopped and reconnecting usually fixes it.
+    private var stale: Bool {
+        guard connected, checked, !busy else { return false }
+        guard let seen else { return true }
+        return Date().timeIntervalSince(seen) > 4 * 60 * 60
+    }
     private var canConnect: Bool { !demo && MailDigestClient.connectPageURL != nil }
 
     var body: some View {
         NavigationStack {
             Form {
+                if stale {
+                    Section {
+                        Label("Özet birkaç saattir güncellenmedi. Yeniden bağlamak genelde düzeltir.",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(Room.noticeInk)
+                        Button("Yeniden bağla") { Task { await connect() } }
+                            .disabled(busy || !canConnect)
+                    }
+                }
                 digest
                 if connected { rulesSection }
                 connection
@@ -218,8 +237,18 @@ struct MailDigestSheet: View {
     private var connection: some View {
         Section {
             if connected {
-                Label("Okul mailin bağlı. Özet her saat yenilenir.", systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Okul mailin bağlı. Özet her saat yenilenir.")
+                        if let seen {
+                            Text("Son kontrol " + seen.formatted(.relative(presentation: .named)))
+                                .font(.footnote)
+                        }
+                    }
+                } icon: {
+                    Image(systemName: "checkmark.circle")
+                }
+                .foregroundStyle(.secondary)
                 Button("Yeniden bağla") { Task { await connect() } }
                     .disabled(busy || !canConnect)
                 Button("Bağlantıyı kes", role: .destructive) { confirmDisconnect = true }
@@ -263,15 +292,19 @@ struct MailDigestSheet: View {
             #if DEBUG
             if demo {
                 draft = try MailDigestClient.demoDraft()
+                seen = Date().addingTimeInterval(-12 * 60)
+                checked = true
                 return
             }
             #endif
-            let latest = try await client.draft()
+            let (latest, lastSeen) = try await client.draft()
             if draft?.shareText != latest?.shareText {
                 shared = false
                 expanded = []
             }
             draft = latest
+            seen = lastSeen
+            checked = true
         } catch {
             status = "Mail özeti alınamadı. Bağlantını kontrol edip yeniden dene."
         }
@@ -285,6 +318,7 @@ struct MailDigestSheet: View {
             let token = try await client.register()
             guard let page = MailDigestClient.connectPage(token: token) else { return }
             draft = nil
+            seen = Date()
             shared = false
             status = nil
             storedConnected = true

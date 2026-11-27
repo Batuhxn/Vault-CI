@@ -101,12 +101,14 @@ final class TourUITests: XCTestCase {
         }
 
         // Us (first close a message menu a stray long press may have opened)
-        if app.buttons["Kopyala"].exists {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap()
-            sleep(1)
-        }
+        dismissMessageMenu()
         _ = tapIfExists(app.tabBars.buttons["Biz"])
         sleep(2)
+        if !app.buttons["Mail Özeti"].exists {
+            dismissMessageMenu()
+            _ = tapIfExists(app.tabBars.buttons["Biz"])
+            sleep(2)
+        }
         shot(prefix, "us")
         let openedMailDigest = tapIfExists(app.buttons["Mail Özeti"], timeout: 5)
         XCTAssertTrue(openedMailDigest)
@@ -151,6 +153,15 @@ final class TourUITests: XCTestCase {
     }
 
     @discardableResult
+    /// A long press during the chat steps can leave a message menu open (it is a
+    /// menu, not buttons, in some layouts): tap above it to close it.
+    private func dismissMessageMenu() {
+        for _ in 0..<2 where app.descendants(matching: .any)["Kopyala"].exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.22)).tap()
+            sleep(1)
+        }
+    }
+
     private func tapIfExists(_ element: XCUIElement, timeout: TimeInterval = 3) -> Bool {
         guard element.waitForExistence(timeout: timeout), element.isHittable else { return false }
         element.tap()

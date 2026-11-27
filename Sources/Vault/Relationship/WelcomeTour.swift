@@ -475,7 +475,10 @@ struct LetterView: View {
                 .padding(.top, 64)
                 .offset(y: shown ? 0 : RelationshipMotion.letterRise)
                 .opacity(shown ? 1 : 0)
-
+                .padding(.bottom, 24)
+            }
+            // Always in reach, however long the note or large the text.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 Button(action: close) {
                     Text("Kapat")
                         .font(.body.weight(.semibold))
@@ -485,7 +488,8 @@ struct LetterView: View {
                 }
                 .buttonStyle(Pressable())
                 .padding(.horizontal, screenMargin)
-                .padding(.vertical, 28)
+                .padding(.vertical, 14)
+                .background(Room.cream)
             }
         }
         .onAppear {

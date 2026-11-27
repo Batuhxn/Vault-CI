@@ -2,16 +2,58 @@ import CryptoKit
 import Foundation
 import Security
 
-struct MailDigest: Decodable {
-    let ozet: String
+/// One mail (or a few on the same subject) as Gemini sorted it.
+struct MailItem: Codable, Hashable {
+    let onem: String
+    let baslik: String
+    let detay: String?
     let yapilacak: String?
     let sonTarih: String?
+    let kaynak: String?
+
+    var important: Bool { onem == "yuksek" }
 
     var shareText: String {
-        var lines = [ozet]
-        if let yapilacak { lines.append("Yapılacak: \(yapilacak)") }
-        if let sonTarih { lines.append("Son tarih: \(sonTarih)") }
-        return lines.joined(separator: "\n")
+        var line = (kaynak.map { "\($0): " } ?? "") + baslik
+        if let sonTarih { line += " (\(sonTarih))" }
+        if let yapilacak { line += "\n  Yapılacak: \(yapilacak)" }
+        return line
+    }
+}
+
+/// The latest sorted digest: important items, the rest, and how many were skipped.
+/// Also reads the first version (a single summary) as one item.
+struct MailDigest: Decodable {
+    let items: [MailItem]
+    let atlanan: Int
+
+    init(items: [MailItem], atlanan: Int) {
+        self.items = items
+        self.atlanan = atlanan
+    }
+
+    private enum Keys: String, CodingKey { case items, atlanan, ozet, yapilacak, sonTarih }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        if let items = try container.decodeIfPresent([MailItem].self, forKey: .items) {
+            self.items = items
+            atlanan = (try? container.decode(Int.self, forKey: .atlanan)) ?? 0
+        } else {
+            items = [MailItem(onem: "normal", baslik: try container.decode(String.self, forKey: .ozet), detay: nil,
+                              yapilacak: try container.decodeIfPresent(String.self, forKey: .yapilacak),
+                              sonTarih: try container.decodeIfPresent(String.self, forKey: .sonTarih), kaynak: nil)]
+            atlanan = 0
+        }
+    }
+
+    var important: [MailItem] { items.filter(\.important) }
+    var other: [MailItem] { items.filter { !$0.important } }
+
+    /// What goes to the chat: the important items (or everything when none is).
+    var shareText: String {
+        let list = important.isEmpty ? items : important
+        return "📬 Okul mailleri\n" + list.map { "• " + $0.shareText }.joined(separator: "\n")
     }
 }
 
@@ -56,6 +98,20 @@ struct MailDigestClient {
         guard status == 200 else { return nil }
         guard let key = try loadKey() else { throw ClientError.unavailableKey }
         return try Self.open(data, ownerID: ownerID, with: key)
+    }
+
+    /// What the summary should know: the owner's own rules, their courses, and
+    /// where to send an alert for an important mail. Needs a connected mailbox.
+    func savePrefs(rules: String, courses: [Course], push: String?) async throws {
+        struct Prefs: Encodable {
+            struct Entry: Encodable { let code: String; let name: String? }
+            let rules: String
+            let courses: [Entry]
+            let push: String?
+        }
+        let entries = courses.prefix(40).map { Prefs.Entry(code: $0.code, name: $0.name.isEmpty ? nil : $0.name) }
+        let body = try JSONEncoder().encode(Prefs(rules: rules, courses: Array(entries), push: push))
+        _ = try await request("prefs", method: "PUT", body: body, expecting: [204])
     }
 
     func disconnect() async throws {
@@ -114,7 +170,18 @@ struct MailDigestClient {
           "ciphertext": "1q5RhIlqRKXjmbx0WOxDXUPeXwfWxaUqu5ZacYOdttIBOMBhZHeqqQjrs-iFkrf5lOvykkmjFhmByHFX3Y43TNYDbAiYkXLEj9iRc77RqNGIPEmSM97CXy4oTqZALsTNh1b958OSCN0NPXC432j0i2vBJHh2QHr93uF0vpkOCt6wsKqmB4xTH5oZssXJGHA"
         }
         """
-        return try open(Data(fixture.utf8), ownerID: "mail-demo", with: key)
+        let legacy = try open(Data(fixture.utf8), ownerID: "mail-demo", with: key)
+        guard let lab = legacy.items.first else { return legacy }
+        return MailDigest(items: [
+            MailItem(onem: "yuksek", baslik: lab.baslik, detay: "Laboratuvar saati değişti, salon aynı.",
+                     yapilacak: lab.yapilacak, sonTarih: lab.sonTarih, kaynak: "EE 101"),
+            MailItem(onem: "yuksek", baslik: "EE 303 vize salonu B201 oldu", detay: "Sınav saati değişmedi.",
+                     yapilacak: nil, sonTarih: "Pazartesi 10:00", kaynak: "EE 303"),
+            MailItem(onem: "normal", baslik: "Kütüphane final haftası 24 saat açık", detay: nil,
+                     yapilacak: nil, sonTarih: nil, kaynak: "Kütüphane"),
+            MailItem(onem: "normal", baslik: "Bahar dönemi ders seçimi takvimi yayınlandı", detay: "Ayrıntılar SIS'te.",
+                     yapilacak: nil, sonTarih: nil, kaynak: "Öğrenci İşleri"),
+        ], atlanan: 6)
     }
     #endif
 

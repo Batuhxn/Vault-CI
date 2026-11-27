@@ -59,7 +59,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         -> UNNotificationPresentationOptions {
         // Exam and class reminders are local and worth seeing even with the app open.
         let id = notification.request.identifier
-        return id.hasPrefix("wl.agenda.") || id.hasPrefix("wl.class.") ? [.banner, .sound, .list] : []
+        // Important school mail alerts come from the mail relay and are worth seeing too.
+        let mailAlert = notification.request.content.userInfo["wlMail"] != nil
+        return mailAlert || id.hasPrefix("wl.agenda.") || id.hasPrefix("wl.class.") ? [.banner, .sound, .list] : []
     }
 
     /// A class reminder's button (Gidiyorum / Gitmiyorum / Ders iptal / Muafım) marks that class.

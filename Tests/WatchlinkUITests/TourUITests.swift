@@ -111,9 +111,11 @@ final class TourUITests: XCTestCase {
         let openedMailDigest = tapIfExists(app.buttons["Mail Özeti"], timeout: 5)
         XCTAssertTrue(openedMailDigest)
         if openedMailDigest {
-            let preview = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Cuma 14.00")).firstMatch
+            let preview = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", "Cuma 14.00")).firstMatch
             XCTAssertTrue(preview.waitForExistence(timeout: 5))
             shot(prefix, "mail-digest")
+            app.swipeUp()
+            shot(prefix, "mail-rules")
             XCTAssertTrue(tapIfExists(app.buttons["Bitti"]))
         }
         // Timetable: imported from the SIS PDF fixture by the real reader.

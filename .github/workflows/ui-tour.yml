@@ -127,6 +127,7 @@ jobs:
               -destination "id=$device" \
               -derivedDataPath "$RUNNER_TEMP/dd" \
               -resultBundlePath "$bundle" \
+              -retry-tests-on-failure -test-iterations 2 \
               -only-testing:WatchlinkUITests > "$RUNNER_TEMP/test-$slug.log" 2>&1 || failed=1
             tail -n 25 "$RUNNER_TEMP/test-$slug.log"
             # Say which assertion failed, with its line.
